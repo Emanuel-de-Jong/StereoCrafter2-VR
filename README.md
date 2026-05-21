@@ -50,8 +50,8 @@ You can use Anaconda or Docker to build this basic environment.
 ```bash
 # use --recursive to clone the dependent submodules
 git clone --recursive https://github.com/TencentARC/StereoCrafter
-git switch -c v2 origin/v2
 cd StereoCrafter
+git switch -c v2 origin/v2
 ```
 
 #### 3. Install the requirements

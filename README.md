@@ -28,7 +28,7 @@ We propose a novel framework to convert any 2D videos to immersive stereoscopic 
 ![teaser](assets/teaser.jpg)
 
 ## 📣 News
-- `2026/05/20` We released an update to the StereoCrafter with inference code and model weights. 🔗<a href='https://github.com/TencentARC/StereoCrafter/tree/v2'>
+- `2026/05/20` We released an update to the StereoCrafter with inference code and model weights. [🔗](https://github.com/TencentARC/StereoCrafter/tree/v2)
 - `2024/12/27` We released our inference code and model weights.
 - `2024/09/11` We submitted our technical report on arXiv and released our project page.
 

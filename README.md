@@ -140,9 +140,9 @@ Arguments:
 
 The stereo video inpainting generates the stereo video result in side-by-side format and anaglyph 3D format, as shown below:
 
-<img src="assets/camel_sbs.jpg" alt="camel_sbs" width="800"/> 
+<img src="assets/camel_sbs.png" alt="camel_sbs" width="800"/> 
 
-<img src="assets/camel_anaglyph.jpg" alt="camel_anaglyph" width="400"/>
+<img src="assets/camel_anaglyph.png" alt="camel_anaglyph" width="400"/>
 
 ## 🤝 Acknowledgements
 

@@ -582,9 +582,9 @@ def main(
     input_video_path,
     save_dir,
     frames_chunk=81,
-    frames_overlap=5,
-    tile_overlap=64,
-    tile_num=2,
+    frames_overlap=10,
+    tile_overlap=128,
+    tile_num=1,
     inference_steps=8,
     seed=42,
 ):

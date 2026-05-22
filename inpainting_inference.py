@@ -581,15 +581,12 @@ def main(
     transformer_path,
     input_video_path,
     save_dir,
-    frames_chunk=81,
-    frames_overlap=10,
+    frames_chunk=79,
+    frames_overlap=3,
     tile_overlap=128,
-    tile_num=1,
+    tile_num=2,
     inference_steps=8,
-    seed=42,
 ):
-    if seed is not None:
-        torch.manual_seed(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)

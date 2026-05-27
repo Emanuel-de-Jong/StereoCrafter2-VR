@@ -12,6 +12,7 @@ from transformers import AutoTokenizer, UMT5EncoderModel
 import ftfy
 import html
 import re
+import random
 from fire import Fire
 
 
@@ -56,7 +57,11 @@ class FlowMatchScheduler():
             sigma_ = self.sigmas[timestep_id + 1]
         prev_sample = sample + model_output * (sigma_ - sigma)
         return prev_sample
+    
 
+def encode_vae_mode(vae, x):
+    dist = vae.encode(x).latent_dist
+    return dist.mode() if hasattr(dist, "mode") else dist.mean
 
 def basic_clean(text):
     text = ftfy.fix_text(text)
@@ -402,16 +407,16 @@ def prepare_video_latents(
 
     if mask is None:
         # latents = retrieve_latents(vae.encode(video), generator, sample_mode="argmax").unbind(0)
-        latents = vae.encode(video).latent_dist.sample()
+        latents = encode_vae_mode(vae, video)
         latents = ((latents.float() - latents_mean) * latents_std).to(vae_dtype)
     else:
         mask = torch.where(mask > 0.5, 1.0, 0.0).to(dtype=vae_dtype)
         inactive = video * (1 - mask)
         reactive = video * mask
         # inactive = retrieve_latents(vae.encode(inactive), generator, sample_mode="argmax")
-        inactive = vae.encode(inactive).latent_dist.sample()
+        inactive = encode_vae_mode(vae, inactive)
         # reactive = retrieve_latents(vae.encode(reactive), generator, sample_mode="argmax")
-        reactive = vae.encode(reactive).latent_dist.sample()
+        reactive = encode_vae_mode(vae, reactive)
         inactive = ((inactive.float() - latents_mean) * latents_std).to(vae_dtype)
         reactive = ((reactive.float() - latents_mean) * latents_std).to(vae_dtype)
         latents = torch.cat([inactive, reactive], dim=1)
@@ -581,12 +586,19 @@ def main(
     transformer_path,
     input_video_path,
     save_dir,
-    frames_chunk=79,
-    frames_overlap=3,
+    frames_chunk=81,
+    frames_overlap=10,
     tile_overlap=128,
     tile_num=2,
-    inference_steps=8,
+    inference_steps=10,
+    seed=0,
 ):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)

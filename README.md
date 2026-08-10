@@ -25,20 +25,10 @@ Ying Shan
 
 We propose a novel framework to convert any 2D videos to immersive stereoscopic 3D ones that can be viewed on different display devices, like 3D Glasses, Apple Vision Pro and 3D Display. It can be applied to various video sources, such as movies, vlogs, 3D cartoons, and AIGC videos.
 
-![teaser](assets/teaser.jpg)
-
 ## 📣 News
 - `2026/05/20` We released an update to the StereoCrafter with inference code and model weights. [🔗](https://github.com/TencentARC/StereoCrafter/tree/v2)
 - `2024/12/27` We released our inference code and model weights.
 - `2024/09/11` We submitted our technical report on arXiv and released our project page.
-
-<!--
-## 🎞️ Showcases
-Here we show some examples of input videos and their corresponding stereo outputs in Anaglyph 3D format.
-<div align="center">
-    <img src="assets/demo.gif">
-</div>
--->
 
 ## 🛠️ Installation
 
@@ -140,13 +130,11 @@ python 1_depth_splatting_inference.py --pre_trained_path [PATH] --unet_path [PAT
 Arguments:
 - `--pre_trained_path`: Path to the SVD img2vid model weights (e.g., `./weights/stable-video-diffusion-img2vid-xt-1-1`).
 - `--unet_path`: Path to the DepthCrafter model weights (e.g., `./weights/DepthCrafter`).
-- `--input_video_path`: Path to the input video (e.g., `./source_video/camel.mp4`).
+- `--input_video_path`: Path to the input video (e.g., `./input/vid.mp4`).
 - `--output_video_path`: Path to the output video (e.g., `./outputs/camel_splatting_results.mp4`).
 - `--max_disp`: Parameter controlling the maximum disparity between the generated right video and the input left video. Default value is `20` pixels.
 
 The first step generates a video grid with input video, visualized depth map, occlusion mask, and splatting right video, as shown below:
-
-<img src="assets/camel_splatting_results.jpg" alt="camel_splatting_results" width="800"/> 
 
 #### 2. Stereo Video Inpainting of the Splatting Video
 Execute the following command:
@@ -162,10 +150,6 @@ Arguments:
 - `--tile_num`: The number of tiles in width and height dimensions for tiled processing, which allows for handling high resolution input without requiring more GPU memory. The default value is `1` (1 $\times$ 1 tile). For input videos with a resolution of 2K or higher, you could use more tiles to avoid running out of memory.
 
 The stereo video inpainting generates the stereo video result in side-by-side format and anaglyph 3D format, as shown below:
-
-<img src="assets/camel_sbs.png" alt="camel_sbs" width="800"/> 
-
-<img src="assets/camel_anaglyph.png" alt="camel_anaglyph" width="400"/>
 
 ## 🤝 Acknowledgements
 

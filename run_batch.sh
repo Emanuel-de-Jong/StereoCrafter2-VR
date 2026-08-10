@@ -2,6 +2,7 @@
 
 INPUT_DIR="./inputs"
 OUTPUT_DIR="./outputs"
+mkdir -p "$OUTPUT_DIR"
 
 shopt -s nullglob
 
@@ -23,7 +24,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 
 	python inpainting_inference.py \
 		--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
-		--unet_path ./weights/StereoCrafter2 \
+		--transformer_path ./weights/StereoCrafter2 \
 		--input_video_path "$output_file" \
         --save_dir "$OUTPUT_DIR" \
 		--tile_num 2

@@ -78,7 +78,7 @@ mkdir weights
 cd ./weights
 git lfs install
 mkdir stable-video-diffusion-img2vid-xt-1-1
-# Download the file model_index.json and folders image_encoder and vae from https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
+# Download the files model_index.json, image_encoder/config.json and image_encoder/model.fp16.safetensors and the folder vae from https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
 # Put them in the folder
 ```
 
@@ -94,7 +94,7 @@ mkdir DepthCrafter
 
 ```bash
 mkdir Wan2.1-VACE-14B-diffusers
-# Download the file model_index.json and folders tokenizer, text_encoder and vae from https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers
+# Download the file model_index.json and the folders tokenizer, text_encoder and vae from https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers
 # Put them in the folder
 ```
 
@@ -138,7 +138,7 @@ The first step generates a video grid with input video, visualized depth map, oc
 #### 2. Stereo Video Inpainting of the Splatting Video
 Execute the following command:
 ```bash
-python inpainting_inference.py --pre_trained_path [PATH] --unet_path [PATH]
+python inpainting_inference.py --pre_trained_path [PATH] --transformer_path [PATH]
                                --input_video_path [PATH] --save_dir [PATH]
 ```
 Arguments:

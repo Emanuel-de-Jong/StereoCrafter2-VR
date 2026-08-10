@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.io import write_video
+# from torchvision.io import write_video
 
 from diffusers.training_utils import set_seed
 from fire import Fire
@@ -152,7 +152,7 @@ class DepthCrafterDemo:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         if save_depth:
             np.savez_compressed(save_path + ".npz", depth=res)
-            write_video(save_path + "_depth_vis.mp4", vis*255.0, fps=target_fps, video_codec="h264", options={"crf": "16"})
+            # write_video(save_path + "_depth_vis.mp4", vis*255.0, fps=target_fps, video_codec="h264", options={"crf": "16"})
 
         return res, vis
     

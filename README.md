@@ -63,7 +63,7 @@ pip install -r requirements.txt
 ```
 cd ./dependency/Forward-Warp
 chmod a+x install.sh
-./install.sh
+CC=gcc-12 CXX=g++-12 ./install.sh
 ```
 
 
@@ -111,9 +111,9 @@ mkdir StereoCrafter2
 Script:
 
 ```bash
-./run_inference.sh
+conda run -n stereocrafter2 sh run_inference.sh
 # or
-./run_batch.sh
+conda run -n stereocrafter2 sh run_batch.sh
 ```
 
 There are two main steps in this script for generating stereo video.

@@ -23,7 +23,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--unet_path ./weights/DepthCrafter \
 		--input_video_path "$video" \
 		--output_video_path "$output_file" \
-		--target_fps 15 \
+		--target_fps 30 \
 		--max_res 1024 \
 		--window_size 70 \
 		--overlap 25 \
@@ -35,8 +35,8 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--transformer_path ./weights/StereoCrafter2-FP8 \
 		--input_video_path "$output_file" \
 		--save_dir "$OUTPUT_DIR" \
-		--tile_num 2 \
-		--transformer_dtype auto \
+		--tile_num 4 \
+		--transformer_dtype fp8 \
 		--transformer_cpu_offload none \
 		--vae_cpu_offload none
 

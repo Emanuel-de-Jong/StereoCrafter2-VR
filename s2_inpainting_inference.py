@@ -32,7 +32,7 @@ def get_torch_dtype(dtype):
     if dtype is None:
         return None
     dtype = dtype.lower()
-    if dtype in ["auto", "none"]:
+    if dtype in ["auto", "none", "fp8"]:
         return None
     if dtype in ["bfloat16", "bf16"]:
         return torch.bfloat16
@@ -69,12 +69,18 @@ def load_fp8_transformer(transformer_path):
 def load_transformer(
     transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"
 ):
+    transformer_dtype_name = transformer_dtype.lower() if isinstance(transformer_dtype, str) else transformer_dtype
     transformer_dtype = get_torch_dtype(transformer_dtype)
     load_kwargs = {"low_cpu_mem_usage": True}
     if transformer_dtype is not None:
         load_kwargs["torch_dtype"] = transformer_dtype
 
-    if os.path.isfile(os.path.join(transformer_path, FP8_STATE_FILE)):
+    fp8_state_path = os.path.join(transformer_path, FP8_STATE_FILE)
+
+    if transformer_dtype_name == "fp8" and not os.path.isfile(fp8_state_path):
+        raise FileNotFoundError(f"FP8 transformer state file not found: {fp8_state_path}")
+
+    if transformer_dtype_name in ["auto", "fp8"] and os.path.isfile(fp8_state_path):
         transformer = load_fp8_transformer(transformer_path)
     else:
         transformer = WanVACETransformer3DModel.from_pretrained(

@@ -33,6 +33,23 @@ def get_target_size(width, height, target_width, target_height):
     return target_width, target_height
 
 
+def get_realesrgan_scaling_factor(width, height, target_width, target_height):
+    supported_scaling_factors = [2, 3, 4]
+    closest_scaling_factor = supported_scaling_factors[0]
+    closest_distance = None
+
+    for scaling_factor in supported_scaling_factors:
+        scaled_width = width * scaling_factor
+        scaled_height = height * scaling_factor
+        distance = abs(scaled_width - target_width) + abs(scaled_height - target_height)
+
+        if closest_distance is None or distance < closest_distance:
+            closest_distance = distance
+            closest_scaling_factor = scaling_factor
+
+    return closest_scaling_factor
+
+
 def main(
     input_video_path="outputs/vid_2_sbs.mp4",
     output_video_path="outputs/vid_3_upscale.mp4",
@@ -62,9 +79,14 @@ def main(
         )
         return
 
-    output_width, output_height = get_target_size(
+    target_output_width, target_output_height = get_target_size(
         width, height, target_width, target_height
     )
+    scaling_factor = get_realesrgan_scaling_factor(
+        width, height, target_output_width, target_output_height
+    )
+    output_width = width * scaling_factor
+    output_height = height * scaling_factor
     print(f"Upscaling to: {output_width}x{output_height}", flush=True)
 
     os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
@@ -77,16 +99,14 @@ def main(
         output_video_path,
         "-p",
         "realesrgan",
-        "-w",
-        str(output_width),
-        "-h",
-        str(output_height),
+        "-s",
+        str(scaling_factor),
         "--realesrgan-model",
         realesrgan_model,
     ]
 
     if gpu is not None:
-        command.extend(["-g", str(gpu)])
+        command.extend(["-d", str(gpu)])
 
     print("Running Video2X:", " ".join(command), flush=True)
     subprocess.run(command, check=True)

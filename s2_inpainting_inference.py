@@ -683,6 +683,7 @@ def main(
     transformer_cpu_offload="none",
     vae_cpu_offload="none",
     seed=0,
+    overwrite=False,
 ):
     if seed is not None:
         random.seed(seed)
@@ -692,7 +693,12 @@ def main(
         torch.cuda.manual_seed_all(seed)
 
     os.makedirs(save_dir, exist_ok=True)
-    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "") + "_inpainting_results"
+    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
+    frames_sbs_path = os.path.join(save_dir, f"{video_name}_2_sbs.mp4")
+
+    if os.path.exists(frames_sbs_path) and not overwrite:
+        print(f"==> output already exists, skipping: {frames_sbs_path}", flush=True)
+        return
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)
@@ -892,7 +898,6 @@ def main(
 
 
     frames_sbs = np.concatenate([video_left_np, video_np], axis=2)
-    frames_sbs_path = os.path.join(save_dir, f"{video_name}_2_sbs.mp4")
     frames_sbs_frames_list = [frames_sbs[i] for i in range(frames_sbs.shape[0])]
     # print(frames_sbs_frames_list[0].shape)
     export_to_video(frames_sbs_frames_list, frames_sbs_path, fps=int(fps))

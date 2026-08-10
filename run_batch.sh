@@ -40,7 +40,9 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--transformer_cpu_offload none \
 		--vae_cpu_offload none
 
-	python -u s3_upscale.py
+	python -u s3_upscale.py \
+		--input_video_path "$OUTPUT_DIR/${basename}_2_sbs.mp4" \
+		--output_video_path "$OUTPUT_DIR/${basename}_3_upscale.mp4"
 
     echo "Finished $video"
     echo "-----------------------------------"

@@ -28,4 +28,6 @@ python -u s2_inpainting_inference.py \
     --transformer_cpu_offload none \
     --vae_cpu_offload none
 
-python -u s3_upscale.py
+python -u s3_upscale.py \
+    --input_video_path "$OUTPUT_DIR/vid_2_sbs.mp4" \
+    --output_video_path "$OUTPUT_DIR/vid_3_upscale.mp4"

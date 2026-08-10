@@ -14,7 +14,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 
 	filename=$(basename "$video")
     basename="${filename%.*}"
-	output_file="$OUTPUT_DIR/${basename}_splatting_results.mp4"
+	output_file="$OUTPUT_DIR/${basename}_1_splatting.mp4"
 
     echo "Processing $video..."
 
@@ -39,6 +39,8 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--transformer_dtype auto \
 		--transformer_cpu_offload none \
 		--vae_cpu_offload none
+
+	python -u 3_upscale.py
 
     echo "Finished $video"
     echo "-----------------------------------"

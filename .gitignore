@@ -5,3 +5,5 @@ __pycache__/
 inputs/*
 outputs/*
 weights/*
+dependency/realesrgan-ncnn-vulkan-v0.2.0-ubuntu
+dependency/Video2X

@@ -20,6 +20,7 @@ from fire import Fire
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16
 PROMPT = ""
+FP8_STATE_FILE = "diffusion_pytorch_model_fp8.pt"
 
 
 def cleanup_cuda():
@@ -50,13 +51,28 @@ def enable_vae_memory_features(vae):
         vae.enable_tiling()
 
 
+def load_fp8_transformer(transformer_path):
+    import torchao
+    from accelerate import init_empty_weights
+
+    config = WanVACETransformer3DModel.load_config(transformer_path)
+    with init_empty_weights():
+        transformer = WanVACETransformer3DModel.from_config(config)
+    state_dict = torch.load(os.path.join(transformer_path, FP8_STATE_FILE), map_location="cpu", weights_only=False)
+    transformer.load_state_dict(state_dict, assign=True)
+    return transformer
+
+
 def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"):
     transformer_dtype = get_torch_dtype(transformer_dtype)
     load_kwargs = {"low_cpu_mem_usage": True}
     if transformer_dtype is not None:
         load_kwargs["torch_dtype"] = transformer_dtype
 
-    transformer = WanVACETransformer3DModel.from_pretrained(transformer_path, **load_kwargs)
+    if os.path.isfile(os.path.join(transformer_path, FP8_STATE_FILE)):
+        transformer = load_fp8_transformer(transformer_path)
+    else:
+        transformer = WanVACETransformer3DModel.from_pretrained(transformer_path, **load_kwargs)
 
     if isinstance(transformer_cpu_offload, str):
         transformer_cpu_offload = transformer_cpu_offload.lower()
@@ -676,7 +692,7 @@ def main(
         torch.cuda.manual_seed_all(seed)
 
     os.makedirs(save_dir, exist_ok=True)
-    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_splatting_results", "") + "_inpainting_results"
+    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "") + "_inpainting_results"
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)
@@ -876,7 +892,7 @@ def main(
 
 
     frames_sbs = np.concatenate([video_left_np, video_np], axis=2)
-    frames_sbs_path = os.path.join(save_dir, f"{video_name}_sbs.mp4")
+    frames_sbs_path = os.path.join(save_dir, f"{video_name}_2_sbs.mp4")
     frames_sbs_frames_list = [frames_sbs[i] for i in range(frames_sbs.shape[0])]
     # print(frames_sbs_frames_list[0].shape)
     export_to_video(frames_sbs_frames_list, frames_sbs_path, fps=int(fps))
@@ -887,7 +903,7 @@ def main(
     video_np[:, :, :, 0] = 0
 
     vid_anaglyph = video_left_np + video_np
-    vid_anaglyph_path = os.path.join(save_dir, f"{video_name}_anaglyph.mp4")
+    vid_anaglyph_path = os.path.join(save_dir, f"{video_name}_2_anaglyph.mp4")
     vid_anaglyph_frames_list = [vid_anaglyph[i] for i in range(vid_anaglyph.shape[0])]
 
     export_to_video(vid_anaglyph_frames_list, vid_anaglyph_path, fps=int(fps))

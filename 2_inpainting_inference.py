@@ -1,5 +1,6 @@
 import os
 import math
+import gc
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -19,6 +20,62 @@ from fire import Fire
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16
 PROMPT = ""
+
+
+def cleanup_cuda():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def get_torch_dtype(dtype):
+    if dtype is None:
+        return None
+    dtype = dtype.lower()
+    if dtype in ["auto", "none"]:
+        return None
+    if dtype in ["bfloat16", "bf16"]:
+        return torch.bfloat16
+    if dtype in ["float16", "fp16"]:
+        return torch.float16
+    if dtype in ["float32", "fp32"]:
+        return torch.float32
+    raise ValueError(f"Unknown torch dtype: {dtype}")
+
+
+def enable_vae_memory_features(vae):
+    if hasattr(vae, "enable_slicing"):
+        vae.enable_slicing()
+    if hasattr(vae, "enable_tiling"):
+        vae.enable_tiling()
+
+
+def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"):
+    transformer_dtype = get_torch_dtype(transformer_dtype)
+    load_kwargs = {"low_cpu_mem_usage": True}
+    if transformer_dtype is not None:
+        load_kwargs["torch_dtype"] = transformer_dtype
+
+    transformer = WanVACETransformer3DModel.from_pretrained(transformer_path, **load_kwargs)
+
+    if isinstance(transformer_cpu_offload, str):
+        transformer_cpu_offload = transformer_cpu_offload.lower()
+
+    if transformer_cpu_offload in [None, "none", "cuda", "false"]:
+        transformer = transformer.to(DEVICE)
+    elif transformer_cpu_offload == "group":
+        if not hasattr(transformer, "enable_group_offload"):
+            raise ValueError("Transformer group offload requires a Diffusers version with enable_group_offload support")
+        transformer.enable_group_offload(
+            onload_device=DEVICE,
+            offload_device=torch.device("cpu"),
+            offload_type="block_level",
+            num_blocks_per_group=1,
+        )
+    else:
+        raise ValueError(f"Unknown transformer cpu offload option: {transformer_cpu_offload}")
+
+    return transformer
 
 
 class FlowMatchScheduler():
@@ -463,14 +520,18 @@ def run_wan_pipeline(
     videoprocessor,
     vae_scale_factor_spatial,
     vae_scale_factor_temporal,
-    transformer_patch_size
+    transformer_patch_size,
+    vae_cpu_offload="none"
 ):
     """封装单次 Wan 去噪 Pipeline 以供分块调用"""
     # 此时进入的 cond_frames 是正确的 [B, C, F, H, W]
     height, width = cond_frames.shape[3], cond_frames.shape[4]
     num_frames = cond_frames.shape[2]
 
-    with torch.no_grad():
+    if vae_cpu_offload == "manual":
+        vae.to(DEVICE)
+
+    with torch.inference_mode():
         # VideoProcessor 强制要求输入格式为 [B, F, C, H, W]
         # 所以我们在这里做一次临时的维度翻转：[B, C, F, H, W] -> [B, F, C, H, W]
         cond_frames_vp = cond_frames.permute(0, 2, 1, 3, 4)
@@ -494,6 +555,12 @@ def run_wan_pipeline(
         mask_for_transformer = prepare_masks(mask, reference_images, transformer_patch_size, vae_scale_factor_temporal, vae_scale_factor_spatial).to(DEVICE, dtype=DTYPE)
         control_hidden_states = torch.cat([conditioning_latents, mask_for_transformer], dim=1).to(DTYPE)
 
+    del condition_video, mask, reference_images, conditioning_latents, mask_for_transformer
+
+    if vae_cpu_offload == "manual":
+        vae.to("cpu")
+        cleanup_cuda()
+
     c = transformer.config.in_channels
     f = (num_frames - 1) // vae_scale_factor_temporal + 1
     h = height // vae_scale_factor_spatial
@@ -503,7 +570,7 @@ def run_wan_pipeline(
 
     for i, t in enumerate(noise_scheduler.timesteps):
         timestep_tensor = t.unsqueeze(0).to(DEVICE, dtype=DTYPE)
-        with torch.no_grad():
+        with torch.inference_mode():
             model_pred = transformer(
                 hidden_states=latents,
                 timestep=timestep_tensor,
@@ -512,17 +579,20 @@ def run_wan_pipeline(
                 return_dict=False,
             )[0]
         latents = noise_scheduler.step(model_pred, t, latents)
+        del model_pred, timestep_tensor
+
+    del control_hidden_states
     
     return latents
 
 
 def spatial_tiled_process(
     cond_frames, mask_frames, tile_num, tile_overlap, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor,
-    vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size
+    vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload="none"
 ):
     """处理单段视频的空间分块"""
     if tile_num == 1:
-        return run_wan_pipeline(cond_frames, mask_frames, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size)
+        return run_wan_pipeline(cond_frames, mask_frames, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload)
 
     height = cond_frames.shape[3]
     width = cond_frames.shape[4]
@@ -547,9 +617,11 @@ def spatial_tiled_process(
 
             tile_latent = run_wan_pipeline(
                 cond_tile, mask_tile, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor,
-                vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size
+                vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload
             )
             rows.append(tile_latent)
+            del cond_tile, mask_tile
+            cleanup_cuda()
         cols.append(rows)
 
     # 映射回 Latent 空间的 stride 和 overlap
@@ -591,6 +663,9 @@ def main(
     tile_overlap=128,
     tile_num=2,
     inference_steps=10,
+    transformer_dtype="auto",
+    transformer_cpu_offload="none",
+    vae_cpu_offload="none",
     seed=0,
 ):
     if seed is not None:
@@ -600,34 +675,47 @@ def main(
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+    os.makedirs(save_dir, exist_ok=True)
+    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_splatting_results", "") + "_inpainting_results"
+
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)
-    vae = AutoencoderKLWan.from_pretrained(pre_trained_path, subfolder="vae", torch_dtype=DTYPE).to(DEVICE)
-    transformer = WanVACETransformer3DModel.from_pretrained(transformer_path, torch_dtype=DTYPE).to(DEVICE)
+    text_encoder.eval()
+    text_encoder.requires_grad_(False)
+
+    print("Encoding prompt...")
+    with torch.inference_mode():
+        prompt_embeds, _ = encode_prompt(
+            [PROMPT], do_classifier_free_guidance=False, max_sequence_length=226,
+            device=DEVICE, dtype=DTYPE, tokenizer=tokenizer, text_encoder=text_encoder
+        )
+
+    text_encoder.to("cpu")
+    del text_encoder, tokenizer
+    cleanup_cuda()
+
+    vae = AutoencoderKLWan.from_pretrained(pre_trained_path, subfolder="vae", torch_dtype=DTYPE, low_cpu_mem_usage=True).to(DEVICE)
+    enable_vae_memory_features(vae)
+
+    transformer = load_transformer(transformer_path, transformer_dtype, transformer_cpu_offload)
 
     transformer.eval()
     vae.eval()
-    text_encoder.eval()
 
-    text_encoder.requires_grad_(False)
     vae.requires_grad_(False)
     transformer.requires_grad_(False)
+
+    if isinstance(vae_cpu_offload, str):
+        vae_cpu_offload = vae_cpu_offload.lower()
+    if vae_cpu_offload not in [None, "none", "cuda", "false", "manual"]:
+        raise ValueError(f"Unknown vae cpu offload option: {vae_cpu_offload}")
+    if vae_cpu_offload in [None, "none", "cuda", "false"]:
+        vae_cpu_offload = "none"
 
     videoprocessor = VideoProcessor(vae_scale_factor=vae.config.scale_factor_spatial)
     transformer_patch_size = transformer.config.patch_size[1]
     vae_scale_factor_temporal = 2 ** sum(vae.temperal_downsample)
     vae_scale_factor_spatial = 2 ** len(vae.temperal_downsample)
-
-
-    os.makedirs(save_dir, exist_ok=True)
-    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_splatting_results", "") + "_inpainting_results"
-
-    print("Encoding prompt...")
-    with torch.no_grad():
-        prompt_embeds, _ = encode_prompt(
-            [PROMPT], do_classifier_free_guidance=False, max_sequence_length=226,
-            device=DEVICE, dtype=DTYPE, tokenizer=tokenizer, text_encoder=text_encoder
-        )
 
     print("Loading video...")
     video_reader = VideoReader(input_video_path, ctx=cpu(0))
@@ -724,17 +812,21 @@ def main(
             # 我们通过 torch.cat 临时拼一下历史结果以便提取
             temp_global_generated = torch.cat(generated_video_chunks, dim=2)
             chunk_cond[:, :, :actual_overlap] = temp_global_generated[:, :, cur_i : global_len]
+            del temp_global_generated
 
         print(f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames...")
         
         # --- 空间分块推理 ---
         chunk_latents = spatial_tiled_process(
             chunk_cond, chunk_mask, tile_num, tile_overlap, prompt_embeds, transformer, vae, noise_scheduler, 
-            videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size
+            videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload
         )
 
         # --- 解码当前分段 ---
-        with torch.no_grad():
+        if vae_cpu_offload == "manual":
+            vae.to(DEVICE)
+
+        with torch.inference_mode():
             latents_mean = torch.tensor(vae.config.latents_mean, device=DEVICE, dtype=torch.float32).view(1, vae.config.z_dim, 1, 1, 1)
             latents_std = torch.tensor(vae.config.latents_std, device=DEVICE, dtype=torch.float32).view(1, vae.config.z_dim, 1, 1, 1)
             chunk_latents = chunk_latents.float() * latents_std + latents_mean
@@ -742,6 +834,12 @@ def main(
             video_chunk_tensor = vae.decode(chunk_latents, return_dict=False)[0]
 
             video_chunk_tensor = (video_chunk_tensor / 2 + 0.5).clamp(0, 1)
+
+        if vae_cpu_offload == "manual":
+            vae.to("cpu")
+            cleanup_cuda()
+
+        del chunk_latents, latents_mean, latents_std, chunk_cond, chunk_mask
 
         # 保存并剔除重复片段
         if global_len == 0:
@@ -752,6 +850,8 @@ def main(
             new_frames = video_chunk_tensor[:, :, actual_overlap:]
             generated_video_chunks.append(new_frames)
             global_len += new_frames.shape[2]
+
+        cleanup_cuda()
 
         # 保护机制：如果因为取整或视频极短导致无法前进，跳出避免死循环
         if global_len > 0 and actual_overlap >= valid_chunk_size:

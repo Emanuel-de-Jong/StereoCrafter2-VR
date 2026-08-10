@@ -18,9 +18,12 @@ python -u 1_depth_splatting_inference.py \
 	--decode_chunk_size 8 \
 	--cpu_offload model
 
-# python -u 2_inpainting_inference.py \
-#     --pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
-#     --transformer_path ./weights/StereoCrafter2 \
-#     --input_video_path "$OUTPUT_DIR/vid_splatting_results.mp4" \
-#     --save_dir "$OUTPUT_DIR" \
-#     --tile_num 2
+python -u 2_inpainting_inference.py \
+    --pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
+    --transformer_path ./weights/StereoCrafter2-FP8 \
+    --input_video_path "$OUTPUT_DIR/vid_splatting_results.mp4" \
+    --save_dir "$OUTPUT_DIR" \
+    --tile_num 1 \
+    --transformer_dtype auto \
+    --transformer_cpu_offload none \
+    --vae_cpu_offload none

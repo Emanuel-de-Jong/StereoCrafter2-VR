@@ -6,6 +6,8 @@ mkdir -p "$OUTPUT_DIR"
 
 shopt -s nullglob
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
     # Check if a file actually exists to avoid running on literal '*.mp4' if empty
     [ -e "$video" ] || continue
@@ -30,10 +32,13 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 
 	python -u 2_inpainting_inference.py \
 		--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
-		--transformer_path ./weights/StereoCrafter2 \
+		--transformer_path ./weights/StereoCrafter2-FP8 \
 		--input_video_path "$output_file" \
         --save_dir "$OUTPUT_DIR" \
-		--tile_num 2
+		--tile_num 1 \
+		--transformer_dtype auto \
+		--transformer_cpu_offload none \
+		--vae_cpu_offload none
 
     echo "Finished $video"
     echo "-----------------------------------"

@@ -312,7 +312,12 @@ def main(
     track_time: bool = False,
     save_depth: bool = False,
     decode_chunk_size: int = 8,
+    overwrite: bool = False,
 ):
+    if os.path.exists(output_video_path) and not overwrite:
+        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+        return
+
     depthcrafter_demo = DepthCrafterDemo(
         unet_path=unet_path,
         pre_trained_path=pre_trained_path,

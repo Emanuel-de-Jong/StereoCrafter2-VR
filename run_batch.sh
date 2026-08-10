@@ -16,7 +16,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 
     echo "Processing $video..."
 
-	python -u depth_splatting_inference.py \
+	python -u 1_depth_splatting_inference.py \
 		--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
 		--unet_path ./weights/DepthCrafter \
 		--input_video_path "$video" \
@@ -28,7 +28,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--decode_chunk_size 8 \
 		--cpu_offload model
 
-	python -u inpainting_inference.py \
+	python -u 2_inpainting_inference.py \
 		--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 		--transformer_path ./weights/StereoCrafter2 \
 		--input_video_path "$output_file" \

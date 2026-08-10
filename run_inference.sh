@@ -6,7 +6,7 @@ mkdir -p "$OUTPUT_DIR"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-python -u depth_splatting_inference.py \
+python -u 1_depth_splatting_inference.py \
 	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
 	--unet_path ./weights/DepthCrafter \
 	--input_video_path "$INPUT_DIR/vid.mp4" \
@@ -18,7 +18,7 @@ python -u depth_splatting_inference.py \
 	--decode_chunk_size 8 \
 	--cpu_offload model
 
-# python -u inpainting_inference.py \
+# python -u 2_inpainting_inference.py \
 #     --pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 #     --transformer_path ./weights/StereoCrafter2 \
 #     --input_video_path "$OUTPUT_DIR/vid_splatting_results.mp4" \

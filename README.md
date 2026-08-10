@@ -134,7 +134,7 @@ There are two main steps in these scripts for generating stereo video.
 #### 1. Depth-Based Video Splatting Using the Video Depth from DepthCrafter
 Execute the following command:
 ```bash
-python 1_depth_splatting_inference.py --pre_trained_path [PATH] --unet_path [PATH]
+python s1_depth_splatting_inference.py --pre_trained_path [PATH] --unet_path [PATH]
                                     --input_video_path [PATH] --output_video_path [PATH]
 ```
 Arguments:
@@ -149,7 +149,7 @@ The first step generates a video grid with input video, visualized depth map, oc
 #### 2. Stereo Video Inpainting of the Splatting Video
 Execute the following command:
 ```bash
-python 2_inpainting_inference.py --pre_trained_path [PATH] --transformer_path [PATH]
+python s2_inpainting_inference.py --pre_trained_path [PATH] --transformer_path [PATH]
                                --input_video_path [PATH] --save_dir [PATH]
 ```
 Arguments:

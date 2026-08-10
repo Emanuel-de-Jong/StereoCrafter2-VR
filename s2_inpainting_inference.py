@@ -835,6 +835,81 @@ def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
     ).permute(0, 2, 1, 3, 4)
 
 
+def load_video_chunk(video_reader, start_frame, end_frame, inpaint_scale, base):
+    frame_indices = list(range(start_frame, end_frame))
+    frames = video_reader.get_batch(frame_indices)
+    frames = (
+        torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
+        / 255.0
+    )
+
+    height, width = frames.shape[3] // 2, frames.shape[4] // 2
+    frames_left = frames[:, :, :, :height, :width].clone()
+    all_masks = frames[:, :, :, height:, :width].clone()
+    all_frames = frames[:, :, :, height:, width:].clone()
+    del frames
+
+    if inpaint_scale != 1.0:
+        scaled_height = max(base, int(height * inpaint_scale) // base * base)
+        scaled_width = max(base, int(width * inpaint_scale) // base * base)
+        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
+        all_masks = resize_video_tensor(
+            all_masks, scaled_height, scaled_width, mode="nearest"
+        )
+        all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
+
+    all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
+
+    return frames_left, all_masks, all_frames
+
+
+def get_tiling_padding(height, width, tile_num, tile_overlap, base):
+    min_tile_h = (height + tile_overlap * (tile_num - 1)) / tile_num
+    tile_size_h = math.ceil(min_tile_h / base) * base
+
+    min_tile_w = (width + tile_overlap * (tile_num - 1)) / tile_num
+    tile_size_w = math.ceil(min_tile_w / base) * base
+
+    tile_stride_h = tile_size_h - tile_overlap
+    tile_stride_w = tile_size_w - tile_overlap
+
+    target_h = tile_stride_h * (tile_num - 1) + tile_size_h
+    target_w = tile_stride_w * (tile_num - 1) + tile_size_w
+
+    return target_h - height, target_w - width
+
+
+def pad_video_chunk(all_frames, all_masks, pad_h, pad_w):
+    if pad_h <= 0 and pad_w <= 0:
+        return all_frames, all_masks
+
+    frames_4d = all_frames[0].permute(1, 0, 2, 3)
+    frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode="replicate")
+    all_frames = frames_4d.permute(1, 0, 2, 3).unsqueeze(0)
+    all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode="constant", value=0)
+
+    return all_frames, all_masks
+
+
+def extract_video_context(video_chunks, start_frame, end_frame):
+    context_chunks = []
+    chunk_start = 0
+    for video_chunk in video_chunks:
+        chunk_end = chunk_start + video_chunk.shape[2]
+        overlap_start = max(start_frame, chunk_start)
+        overlap_end = min(end_frame, chunk_end)
+        if overlap_start < overlap_end:
+            context_chunks.append(
+                video_chunk[:, :, overlap_start - chunk_start : overlap_end - chunk_start]
+            )
+        chunk_start = chunk_end
+
+    if not context_chunks:
+        return None
+
+    return torch.cat(context_chunks, dim=2)
+
+
 def main(
     pre_trained_path,
     transformer_path,
@@ -843,7 +918,7 @@ def main(
     frames_chunk=81,
     frames_overlap=10,
     tile_overlap=128,
-    tile_num=2,
+    tile_num=1,
     inference_steps=10,
     inpaint_scale=1.0,
     transformer_dtype="auto",
@@ -923,74 +998,11 @@ def main(
     video_reader = VideoReader(input_video_path, ctx=cpu(0))
     fps = video_reader.get_avg_fps()
     total_frames = len(video_reader)
-    frame_indices = list(range(total_frames))
-    frames = video_reader.get_batch(frame_indices)
-
-    # [t,h,w,c] -> [1,c,t,h,w]
-    frames = (
-        torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
-        / 255.0
-    )
-
-    height, width = frames.shape[3] // 2, frames.shape[4] // 2
-    frames_left = frames[:, :, :, :height, :width]
-    all_masks = frames[:, :, :, height:, :width]
-    all_frames = frames[:, :, :, height:, width:]
 
     base = vae_scale_factor_spatial * transformer_patch_size
 
     if inpaint_scale <= 0:
         raise ValueError(f"inpaint_scale must be greater than 0, got: {inpaint_scale}")
-
-    if inpaint_scale != 1.0:
-        scaled_height = max(base, int(height * inpaint_scale) // base * base)
-        scaled_width = max(base, int(width * inpaint_scale) // base * base)
-        print(
-            f"Downscaling step 2 input from {width}x{height} to {scaled_width}x{scaled_height}."
-        )
-        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
-        all_masks = resize_video_tensor(
-            all_masks, scaled_height, scaled_width, mode="nearest"
-        )
-        all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
-
-    all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
-
-    h_orig, w_orig = all_frames.shape[3], all_frames.shape[4]
-
-    # 1. 向上取整 (math.ceil)，倒推计算出能被 Tiling 完美拼接的“目标分辨率”
-    min_tile_h = (h_orig + tile_overlap * (tile_num - 1)) / tile_num
-    tile_size_h = math.ceil(min_tile_h / base) * base
-
-    min_tile_w = (w_orig + tile_overlap * (tile_num - 1)) / tile_num
-    tile_size_w = math.ceil(min_tile_w / base) * base
-
-    tile_stride_h = tile_size_h - tile_overlap
-    tile_stride_w = tile_size_w - tile_overlap
-
-    target_h = tile_stride_h * (tile_num - 1) + tile_size_h
-    target_w = tile_stride_w * (tile_num - 1) + tile_size_w
-
-    # 2. 计算需要补充的边缘像素数
-    pad_h = target_h - h_orig
-    pad_w = target_w - w_orig
-
-    if pad_h > 0 or pad_w > 0:
-        print(
-            f"Padding resolution from {w_orig}x{h_orig} to {target_w}x{target_h} to perfectly match Tiling output."
-        )
-
-        # 1. 临时取出 Batch 并对调通道和帧数维度: [1, C, F, H, W] -> [F, C, H, W] (变成标准的 4D 图片格式)
-        frames_4d = all_frames[0].permute(1, 0, 2, 3)
-
-        # 2. 对 4D 张量进行边缘复制填充 (PyTorch 对此支持极其完美)
-        frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode="replicate")
-
-        # 3. 还原回 5D 视频张量: [F, C, H_new, W_new] -> [1, C, F, H_new, W_new]
-        all_frames = frames_4d.permute(1, 0, 2, 3).unsqueeze(0)
-
-        # Mask 填充 0 (constant 模式原生支持 5D，直接 pad 即可)
-        all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode="constant", value=0)
 
     noise_scheduler = FlowMatchScheduler()
     noise_scheduler.set_timesteps(
@@ -998,6 +1010,7 @@ def main(
     )
 
     generated_video_chunks = []
+    generated_left_chunks = []
 
     print(f"Starting Temporal Chunking inference (Total Frames: {total_frames})...")
 
@@ -1027,8 +1040,22 @@ def main(
                 (cur_chunk_size - 1) // vae_scale_factor_temporal
             ) * vae_scale_factor_temporal + 1
 
-        chunk_cond = all_frames[:, :, cur_i : cur_i + valid_chunk_size].clone()
-        chunk_mask = all_masks[:, :, cur_i : cur_i + valid_chunk_size]
+        frames_left, chunk_mask, chunk_cond = load_video_chunk(
+            video_reader,
+            cur_i,
+            cur_i + valid_chunk_size,
+            inpaint_scale,
+            base,
+        )
+
+        h_orig, w_orig = chunk_cond.shape[3], chunk_cond.shape[4]
+        pad_h, pad_w = get_tiling_padding(h_orig, w_orig, tile_num, tile_overlap, base)
+
+        if pad_h > 0 or pad_w > 0:
+            print(
+                f"Padding chunk resolution from {w_orig}x{h_orig} to {w_orig + pad_w}x{h_orig + pad_h} to perfectly match Tiling output."
+            )
+            chunk_cond, chunk_mask = pad_video_chunk(chunk_cond, chunk_mask, pad_h, pad_w)
 
         actual_overlap = 0
         if global_len > 0:
@@ -1037,12 +1064,12 @@ def main(
             actual_overlap = global_len - cur_i
 
             # 把已经生成的历史画面作为“绝对条件”覆盖到当前段的前面
-            # 我们通过 torch.cat 临时拼一下历史结果以便提取
-            temp_global_generated = torch.cat(generated_video_chunks, dim=2)
-            chunk_cond[:, :, :actual_overlap] = temp_global_generated[
-                :, :, cur_i:global_len
-            ]
-            del temp_global_generated
+            context = extract_video_context(generated_video_chunks, cur_i, global_len)
+            if context is not None:
+                chunk_cond[:, :, :actual_overlap, :h_orig, :w_orig] = context.to(
+                    chunk_cond.device
+                )
+                del context
 
         print(
             f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames..."
@@ -1090,13 +1117,22 @@ def main(
 
         # 保存并剔除重复片段
         if global_len == 0:
-            generated_video_chunks.append(video_chunk_tensor)
+            if pad_h > 0 or pad_w > 0:
+                video_chunk_tensor = video_chunk_tensor[:, :, :, :h_orig, :w_orig]
+            generated_video_chunks.append(video_chunk_tensor.cpu())
+            generated_left_chunks.append(frames_left.cpu())
             global_len += video_chunk_tensor.shape[2]
         else:
             # 严格剔除历史重叠帧
             new_frames = video_chunk_tensor[:, :, actual_overlap:]
-            generated_video_chunks.append(new_frames)
+            new_left_frames = frames_left[:, :, actual_overlap:]
+            if pad_h > 0 or pad_w > 0:
+                new_frames = new_frames[:, :, :, :h_orig, :w_orig]
+            generated_video_chunks.append(new_frames.cpu())
+            generated_left_chunks.append(new_left_frames.cpu())
             global_len += new_frames.shape[2]
+
+        del video_chunk_tensor, frames_left
 
         cleanup_cuda()
 
@@ -1109,10 +1145,7 @@ def main(
 
     # 拼接所有时间分段
     final_video = torch.cat(generated_video_chunks, dim=2)
-
-    if pad_h > 0 or pad_w > 0:
-        print(f"Removing padding, restoring resolution to {w_orig}x{h_orig}...")
-        final_video = final_video[:, :, :, :h_orig, :w_orig]
+    frames_left = torch.cat(generated_left_chunks, dim=2)
 
     print("\nExporting final video...")
 

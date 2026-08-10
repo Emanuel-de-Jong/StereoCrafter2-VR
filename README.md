@@ -60,14 +60,25 @@ pip install -r requirements.txt
 ```
 
 #### 4. Install customized 'Forward-Warp' package for forward splatting
-```
+```bash
 cd ./dependency/Forward-Warp
+# Manually copy the content of Forward-Warp-Overwrites into Forward-Warp
 chmod a+x install.sh
 CC=gcc-12 CXX=g++-12 ./install.sh
 ```
 
+#### 5. Apply DepthCrafter changes
+```bash
+cd ./dependency/
+# Manually copy the content of DepthCrafter-Overwrites into DepthCrafter
+```
+
 
 ## 📦 Model Weights
+
+<!-- TODO: 1. Download the small files from the release.
+2. Extract the weights folder in the project root.
+3. Download the big files individually: -->
 
 #### 1. Download the [SVD img2vid model](https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1) for the image encoder and VAE.
 
@@ -78,7 +89,7 @@ mkdir weights
 cd ./weights
 git lfs install
 mkdir stable-video-diffusion-img2vid-xt-1-1
-# Download the files model_index.json, image_encoder/config.json and image_encoder/model.fp16.safetensors and the folder vae from https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
+# Download the files model_index.json, image_encoder/config.json and image_encoder/model.fp16.safetensors and the folders feature_extractor and vae from https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
 # Put them in the folder
 ```
 
@@ -108,15 +119,17 @@ mkdir StereoCrafter2
 
 ## 🔄 Inference
 
-Script:
+Scripts:
 
 ```bash
-conda run -n stereocrafter2 sh run_inference.sh
-# or
-conda run -n stereocrafter2 sh run_batch.sh
+conda activate stereocrafter2
+# Then either
+./run_inference.sh
+# Or
+./run_batch.sh
 ```
 
-There are two main steps in this script for generating stereo video.
+There are two main steps in these scripts for generating stereo video.
 
 #### 1. Depth-Based Video Splatting Using the Video Depth from DepthCrafter
 Execute the following command:

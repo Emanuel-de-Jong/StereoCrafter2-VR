@@ -20,9 +20,9 @@ from Forward_Warp import forward_warp
 
 def read_video_frames(video_path, process_length, target_fps, max_res, dataset="open"):
     if dataset == "open":
-        print("==> processing video: ", video_path)
+        print("==> processing video: ", video_path, flush=True)
         vid = VideoReader(video_path, ctx=cpu(0))
-        print("==> original video shape: ", (len(vid), *vid.get_batch([0]).shape[1:]))
+        print("==> original video shape: ", (len(vid), *vid.get_batch([0]).shape[1:]), flush=True)
         original_height, original_width = vid.get_batch([0]).shape[1:3]
         height = round(original_height / 64) * 64
         width = round(original_width / 64) * 64
@@ -41,12 +41,12 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
     stride = max(stride, 1)
     frames_idx = list(range(0, len(vid), stride))
     print(
-        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}"
+        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}", flush=True
     )
     if process_length != -1 and process_length < len(frames_idx):
         frames_idx = frames_idx[:process_length]
     print(
-        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}"
+        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}", flush=True
     )
     frames = vid.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
 
@@ -74,6 +74,11 @@ class DepthCrafterDemo:
         )
 
         # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
+        if isinstance(cpu_offload, str):
+            cpu_offload = cpu_offload.lower()
+            if cpu_offload in ["none", "cuda", "false"]:
+                cpu_offload = None
+
         if cpu_offload is not None:
             if cpu_offload == "sequential":
                 # This will slow, but save more memory
@@ -88,8 +93,8 @@ class DepthCrafterDemo:
         try:
             self.pipe.enable_xformers_memory_efficient_attention()
         except Exception as e:
-            print(e)
-            print("Xformers is not enabled")
+            print(e, flush=True)
+            print("Xformers is not enabled", flush=True)
         self.pipe.enable_attention_slicing()
 
     def infer(
@@ -107,9 +112,11 @@ class DepthCrafterDemo:
         seed: int = 42,
         track_time: bool = False,
         save_depth: bool = False,
+        decode_chunk_size: int = 8,
     ):
         set_seed(seed)
 
+        print("==> loading video frames", flush=True)
         frames, target_fps, original_height, original_width = read_video_frames(
             input_video_path,
             process_length,
@@ -119,6 +126,7 @@ class DepthCrafterDemo:
         )
 
         # inference the depth map using the DepthCrafter pipeline
+        print("==> running DepthCrafter depth inference", flush=True)
         with torch.inference_mode():
             res = self.pipe(
                 frames,
@@ -130,15 +138,21 @@ class DepthCrafterDemo:
                 window_size=window_size,
                 overlap=overlap,
                 track_time=track_time,
+                decode_chunk_size=decode_chunk_size,
             ).frames[0]
 
         # convert the three-channel output to a single channel depth map
+        print("==> post-processing depth maps", flush=True)
         res = res.sum(-1) / res.shape[-1]
 
         # resize the depth to the original size
-        tensor_res = torch.tensor(res).unsqueeze(1).float().contiguous().cuda()
-        res = F.interpolate(tensor_res, size=(original_height, original_width), mode='bilinear', align_corners=False)
-        res = res.cpu().numpy()[:,0,:,:]
+        resized_res = []
+        for i in range(0, len(res), decode_chunk_size):
+            tensor_res = torch.tensor(res[i:i+decode_chunk_size]).unsqueeze(1).float().contiguous().cuda()
+            tensor_res = F.interpolate(tensor_res, size=(original_height, original_width), mode='bilinear', align_corners=False)
+            resized_res.append(tensor_res.cpu().numpy()[:,0,:,:])
+            del tensor_res
+        res = np.concatenate(resized_res, axis=0)
         
         # normalize the depth map to [0, 1] across the whole video
         res = (res - res.min()) / (res.max() - res.min())
@@ -203,7 +217,8 @@ def DepthSplatting(
         depth_vis, 
         max_disp, 
         process_length, 
-        batch_size):
+        batch_size,
+        target_fps):
     '''
     Depth-Based Video Splatting Using the Video Depth.
     Args:
@@ -214,14 +229,20 @@ def DepthSplatting(
         process_length: The length of video to process.
         batch_size: The batch size for splatting to save GPU memory. 
     '''
+    print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
-    input_frames = vid_reader[:].asnumpy() / 255.0
+    fps = original_fps if target_fps == -1 else target_fps
+    stride = round(original_fps / fps)
+    stride = max(stride, 1)
+    frames_idx = list(range(0, len(vid_reader), stride))
 
-    if process_length != -1 and process_length < len(input_frames):
-        input_frames = input_frames[:process_length]
-        video_depth = video_depth[:process_length]
-        depth_vis = depth_vis[:process_length]
+    if process_length != -1 and process_length < len(frames_idx):
+        frames_idx = frames_idx[:process_length]
+
+    input_frames = vid_reader.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
+    video_depth = video_depth[:len(input_frames)]
+    depth_vis = depth_vis[:len(input_frames)]
 
     stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
 
@@ -232,11 +253,12 @@ def DepthSplatting(
     out = cv2.VideoWriter(
         output_video_path, 
         cv2.VideoWriter_fourcc(*"mp4v"),
-        original_fps, 
+        fps, 
         (width * 2, height * 2)
     )
 
     for i in range(0, num_frames, batch_size):
+        print(f"==> splatting frames {i + 1}-{min(i + batch_size, num_frames)} / {num_frames}", flush=True)
         batch_frames = input_frames[i:i+batch_size]
         batch_depth = video_depth[i:i+batch_size]
         batch_depth_vis = depth_vis[i:i+batch_size]
@@ -276,20 +298,50 @@ def main(
     unet_path: str,
     pre_trained_path: str,
     max_disp: float = 20.0,
-    process_length = -1,
-    batch_size = 10
+    process_length: int = -1,
+    batch_size: int = 10,
+    cpu_offload: str = "model",
+    num_denoising_steps: int = 8,
+    guidance_scale: float = 1.2,
+    window_size: int = 70,
+    overlap: int = 25,
+    max_res: int = 1024,
+    dataset: str = "open",
+    target_fps: int = -1,
+    seed: int = 42,
+    track_time: bool = False,
+    save_depth: bool = False,
+    decode_chunk_size: int = 8,
 ):
     depthcrafter_demo = DepthCrafterDemo(
         unet_path=unet_path,
-        pre_trained_path=pre_trained_path
+        pre_trained_path=pre_trained_path,
+        cpu_offload=cpu_offload,
     )
 
     video_depth, depth_vis = depthcrafter_demo.infer(
-        input_video_path,
-        output_video_path,
-        process_length
+        input_video_path=input_video_path,
+        output_video_path=output_video_path,
+        process_length=process_length,
+        num_denoising_steps=num_denoising_steps,
+        guidance_scale=guidance_scale,
+        window_size=window_size,
+        overlap=overlap,
+        max_res=max_res,
+        dataset=dataset,
+        target_fps=target_fps,
+        seed=seed,
+        track_time=track_time,
+        save_depth=save_depth,
+        decode_chunk_size=decode_chunk_size,
     )
 
+    print("==> unloading DepthCrafter before splatting", flush=True)
+    del depthcrafter_demo
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    print("==> running depth-based forward splatting", flush=True)
     DepthSplatting(
         input_video_path, 
         output_video_path, 
@@ -297,7 +349,8 @@ def main(
         depth_vis,
         max_disp,
         process_length, 
-        batch_size
+        batch_size,
+        target_fps
     )
 
 

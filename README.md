@@ -44,21 +44,20 @@ Here we show some examples of input videos and their corresponding stereo output
 
 #### 1. Set up the environment
 We run our code on Python 3.13 and Cuda 12.8.
-You can use Anaconda or Docker to build this basic environment.
 
 #### 2. Clone the repo
 ```bash
-# use --recursive to clone the dependent submodules
-git clone --recursive https://github.com/TencentARC/StereoCrafter
-cd StereoCrafter
-git switch -c v2 origin/v2
+git clone --recursive https://github.com/Emanuel-de-Jong/StereoCrafter2-VR.git
+cd StereoCrafter2-VR
 ```
 
 #### 3. Install the requirements
 ```bash
+conda create -n stereocrafter2 python=3.13 -y
+conda activate stereocrafter2
+pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
-
 
 #### 4. Install customized 'Forward-Warp' package for forward splatting
 ```
@@ -73,27 +72,37 @@ chmod a+x install.sh
 #### 1. Download the [SVD img2vid model](https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1) for the image encoder and VAE.
 
 ```bash
-# in StereoCrafter project root directory
+cd ../..
+# In StereoCrafter2-VR project root directory
 mkdir weights
 cd ./weights
 git lfs install
-git clone https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
+mkdir stable-video-diffusion-img2vid-xt-1-1
+# Download the file model_index.json and folders image_encoder and vae from https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
+# Put them in the folder
 ```
 
-#### 2. Download the [Wan2.1-VACE-14B-diffusers model](https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers) for the text encoder and VAE.
+#### 2. Download the [DepthCrafter model](https://huggingface.co/tencent/DepthCrafter) for the video depth estimation.
 
 ```bash
-git clone https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers
+mkdir DepthCrafter
+# Download the files config.json and diffusion_pytorch_model.safetensors from https://huggingface.co/tencent/DepthCrafter
+# Put them in the folder
 ```
 
-#### 3. Download the [DepthCrafter model](https://huggingface.co/tencent/DepthCrafter) for the video depth estimation.
+#### 3. Download the [Wan2.1-VACE-14B-diffusers model](https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers) for the text encoder and VAE.
+
 ```bash
-git clone https://huggingface.co/tencent/DepthCrafter
+mkdir Wan2.1-VACE-14B-diffusers
+# Download the file model_index.json and folders tokenizer, text_encoder and vae from https://huggingface.co/Wan-AI/Wan2.1-VACE-14B-diffusers
+# Put them in the folder
 ```
 
 #### 4. Download the [StereoCrafter2 model](https://huggingface.co/TencentARC/StereoCrafter2) for the stereo video generation.
 ```bash
-git clone https://huggingface.co/TencentARC/StereoCrafter2
+mkdir StereoCrafter2
+# Download the files config.json and diffusion_pytorch_model.safetensors from https://huggingface.co/TencentARC/StereoCrafter2
+# Put them in the folder
 ```
 
 
@@ -102,8 +111,9 @@ git clone https://huggingface.co/TencentARC/StereoCrafter2
 Script:
 
 ```bash
-# in StereoCrafter project root directory
-sh run_inference.sh
+./run_inference.sh
+# or
+./run_batch.sh
 ```
 
 There are two main steps in this script for generating stereo video.

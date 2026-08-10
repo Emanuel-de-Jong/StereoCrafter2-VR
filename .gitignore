@@ -1,4 +1,7 @@
 .DS_Store
+prompt*.txt
+prompt*.md
 __pycache__/
+inputs/*
 outputs/*
 weights/*

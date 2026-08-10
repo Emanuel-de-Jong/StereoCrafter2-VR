@@ -14,4 +14,4 @@ opencv-python==4.13.0.92
 ninja==1.13.0
 ftfy==6.3.1
 imageio-ffmpeg==0.6.0
-torchao==0.18.0
+torchao==0.15

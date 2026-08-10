@@ -24,10 +24,12 @@ python -u s2_inpainting_inference.py \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
 	--save_dir "$OUTPUT_DIR" \
-	--tile_num 4 \
+	--tile_num 1 \
 	--transformer_dtype fp8 \
 	--transformer_cpu_offload none \
-	--vae_cpu_offload none
+	--vae_cpu_offload none \
+	--inpaint_scale 0.5 \
+	--inference_steps 6
 
 python -u s3_upscale.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mp4" \

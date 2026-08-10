@@ -69,7 +69,11 @@ def load_fp8_transformer(transformer_path):
 def load_transformer(
     transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"
 ):
-    transformer_dtype_name = transformer_dtype.lower() if isinstance(transformer_dtype, str) else transformer_dtype
+    transformer_dtype_name = (
+        transformer_dtype.lower()
+        if isinstance(transformer_dtype, str)
+        else transformer_dtype
+    )
     transformer_dtype = get_torch_dtype(transformer_dtype)
     load_kwargs = {"low_cpu_mem_usage": True}
     if transformer_dtype is not None:
@@ -78,7 +82,9 @@ def load_transformer(
     fp8_state_path = os.path.join(transformer_path, FP8_STATE_FILE)
 
     if transformer_dtype_name == "fp8" and not os.path.isfile(fp8_state_path):
-        raise FileNotFoundError(f"FP8 transformer state file not found: {fp8_state_path}")
+        raise FileNotFoundError(
+            f"FP8 transformer state file not found: {fp8_state_path}"
+        )
 
     if transformer_dtype_name in ["auto", "fp8"] and os.path.isfile(fp8_state_path):
         transformer = load_fp8_transformer(transformer_path)
@@ -678,7 +684,7 @@ def run_wan_pipeline(
 
     for i, t in enumerate(noise_scheduler.timesteps):
         timestep_tensor = t.unsqueeze(0).to(DEVICE, dtype=DTYPE)
-        with torch.inference_mode():
+        with torch.no_grad():
             model_pred = transformer(
                 hidden_states=latents,
                 timestep=timestep_tensor,
@@ -811,6 +817,24 @@ def spatial_tiled_process(
     return torch.cat(pixels, dim=3)
 
 
+def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
+    batch_size, channels, num_frames = video_tensor.shape[:3]
+    video_tensor = video_tensor.permute(0, 2, 1, 3, 4).reshape(
+        batch_size * num_frames, channels, video_tensor.shape[3], video_tensor.shape[4]
+    )
+
+    if mode in ["linear", "bilinear", "bicubic", "trilinear"]:
+        video_tensor = F.interpolate(
+            video_tensor, size=(height, width), mode=mode, align_corners=False
+        )
+    else:
+        video_tensor = F.interpolate(video_tensor, size=(height, width), mode=mode)
+
+    return video_tensor.reshape(
+        batch_size, num_frames, channels, height, width
+    ).permute(0, 2, 1, 3, 4)
+
+
 def main(
     pre_trained_path,
     transformer_path,
@@ -821,6 +845,7 @@ def main(
     tile_overlap=128,
     tile_num=2,
     inference_steps=10,
+    inpaint_scale=1.0,
     transformer_dtype="auto",
     transformer_cpu_offload="none",
     vae_cpu_offload="none",
@@ -912,9 +937,25 @@ def main(
     all_masks = frames[:, :, :, height:, :width]
     all_frames = frames[:, :, :, height:, width:]
 
+    base = vae_scale_factor_spatial * transformer_patch_size
+
+    if inpaint_scale <= 0:
+        raise ValueError(f"inpaint_scale must be greater than 0, got: {inpaint_scale}")
+
+    if inpaint_scale != 1.0:
+        scaled_height = max(base, int(height * inpaint_scale) // base * base)
+        scaled_width = max(base, int(width * inpaint_scale) // base * base)
+        print(
+            f"Downscaling step 2 input from {width}x{height} to {scaled_width}x{scaled_height}."
+        )
+        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
+        all_masks = resize_video_tensor(
+            all_masks, scaled_height, scaled_width, mode="nearest"
+        )
+        all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
+
     all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
 
-    base = vae_scale_factor_spatial * transformer_patch_size
     h_orig, w_orig = all_frames.shape[3], all_frames.shape[4]
 
     # 1. 向上取整 (math.ceil)，倒推计算出能被 Tiling 完美拼接的“目标分辨率”

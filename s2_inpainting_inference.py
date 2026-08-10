@@ -16,7 +16,6 @@ import re
 import random
 from fire import Fire
 
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16
 PROMPT = ""
@@ -58,12 +57,18 @@ def load_fp8_transformer(transformer_path):
     config = WanVACETransformer3DModel.load_config(transformer_path)
     with init_empty_weights():
         transformer = WanVACETransformer3DModel.from_config(config)
-    state_dict = torch.load(os.path.join(transformer_path, FP8_STATE_FILE), map_location="cpu", weights_only=False)
+    state_dict = torch.load(
+        os.path.join(transformer_path, FP8_STATE_FILE),
+        map_location="cpu",
+        weights_only=False,
+    )
     transformer.load_state_dict(state_dict, assign=True)
     return transformer
 
 
-def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"):
+def load_transformer(
+    transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"
+):
     transformer_dtype = get_torch_dtype(transformer_dtype)
     load_kwargs = {"low_cpu_mem_usage": True}
     if transformer_dtype is not None:
@@ -72,7 +77,9 @@ def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu
     if os.path.isfile(os.path.join(transformer_path, FP8_STATE_FILE)):
         transformer = load_fp8_transformer(transformer_path)
     else:
-        transformer = WanVACETransformer3DModel.from_pretrained(transformer_path, **load_kwargs)
+        transformer = WanVACETransformer3DModel.from_pretrained(
+            transformer_path, **load_kwargs
+        )
 
     if isinstance(transformer_cpu_offload, str):
         transformer_cpu_offload = transformer_cpu_offload.lower()
@@ -81,7 +88,9 @@ def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu
         transformer = transformer.to(DEVICE)
     elif transformer_cpu_offload == "group":
         if not hasattr(transformer, "enable_group_offload"):
-            raise ValueError("Transformer group offload requires a Diffusers version with enable_group_offload support")
+            raise ValueError(
+                "Transformer group offload requires a Diffusers version with enable_group_offload support"
+            )
         transformer.enable_group_offload(
             onload_device=DEVICE,
             offload_device=torch.device("cpu"),
@@ -89,14 +98,18 @@ def load_transformer(transformer_path, transformer_dtype="auto", transformer_cpu
             num_blocks_per_group=1,
         )
     else:
-        raise ValueError(f"Unknown transformer cpu offload option: {transformer_cpu_offload}")
+        raise ValueError(
+            f"Unknown transformer cpu offload option: {transformer_cpu_offload}"
+        )
 
     return transformer
 
 
-class FlowMatchScheduler():
+class FlowMatchScheduler:
 
-    def __init__(self,):
+    def __init__(
+        self,
+    ):
         self.set_timesteps_fn = FlowMatchScheduler.set_timesteps_wan
         self.num_train_timesteps = 1000
 
@@ -111,7 +124,7 @@ class FlowMatchScheduler():
         sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
         timesteps = sigmas * num_train_timesteps
         return sigmas, timesteps
-        
+
     def set_timesteps(self, num_inference_steps=100, denoising_strength=1.0, **kwargs):
         self.sigmas, self.timesteps = self.set_timesteps_fn(
             num_inference_steps=num_inference_steps,
@@ -130,21 +143,24 @@ class FlowMatchScheduler():
             sigma_ = self.sigmas[timestep_id + 1]
         prev_sample = sample + model_output * (sigma_ - sigma)
         return prev_sample
-    
+
 
 def encode_vae_mode(vae, x):
     dist = vae.encode(x).latent_dist
     return dist.mode() if hasattr(dist, "mode") else dist.mean
+
 
 def basic_clean(text):
     text = ftfy.fix_text(text)
     text = html.unescape(html.unescape(text))
     return text.strip()
 
+
 def whitespace_clean(text):
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
     return text
+
 
 def prompt_clean(text):
     text = whitespace_clean(basic_clean(text))
@@ -152,13 +168,13 @@ def prompt_clean(text):
 
 
 def get_t5_prompt_embeds(
-    prompt = None,
-    num_videos_per_prompt = 1,
-    max_sequence_length = 226,
-    device = None,
-    dtype = None,
-    tokenizer = None,
-    text_encoder = None,
+    prompt=None,
+    num_videos_per_prompt=1,
+    max_sequence_length=226,
+    device=None,
+    dtype=None,
+    tokenizer=None,
+    text_encoder=None,
 ):
     # device = device or self._execution_device
     # dtype = dtype or self.text_encoder.dtype
@@ -179,11 +195,17 @@ def get_t5_prompt_embeds(
     text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
     seq_lens = mask.gt(0).sum(dim=1).long()
 
-    prompt_embeds = text_encoder(text_input_ids.to(device), mask.to(device)).last_hidden_state
+    prompt_embeds = text_encoder(
+        text_input_ids.to(device), mask.to(device)
+    ).last_hidden_state
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
     prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
     prompt_embeds = torch.stack(
-        [torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))]) for u in prompt_embeds], dim=0
+        [
+            torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))])
+            for u in prompt_embeds
+        ],
+        dim=0,
     )
 
     # duplicate text embeddings for each generation per prompt, using mps friendly method
@@ -196,16 +218,16 @@ def get_t5_prompt_embeds(
 
 def encode_prompt(
     prompt,
-    negative_prompt = None,
-    do_classifier_free_guidance = True,
-    num_videos_per_prompt = 1,
-    prompt_embeds = None,
-    negative_prompt_embeds = None,
-    max_sequence_length = 226,
-    device = None,
-    dtype = None,
-    tokenizer = None,
-    text_encoder = None,
+    negative_prompt=None,
+    do_classifier_free_guidance=True,
+    num_videos_per_prompt=1,
+    prompt_embeds=None,
+    negative_prompt_embeds=None,
+    max_sequence_length=226,
+    device=None,
+    dtype=None,
+    tokenizer=None,
+    text_encoder=None,
 ):
     r"""
     Encodes the prompt into text encoder hidden states.
@@ -254,7 +276,11 @@ def encode_prompt(
 
     if do_classifier_free_guidance and negative_prompt_embeds is None:
         negative_prompt = negative_prompt or ""
-        negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+        negative_prompt = (
+            batch_size * [negative_prompt]
+            if isinstance(negative_prompt, str)
+            else negative_prompt
+        )
 
         if prompt is not None and type(prompt) is not type(negative_prompt):
             raise TypeError(
@@ -283,11 +309,11 @@ def encode_prompt(
 
 def prepare_masks(
     mask: torch.Tensor,
-    reference_images = None,
+    reference_images=None,
     # generator = None,
-    transformer_patch_size = None,
-    vae_scale_factor_temporal = None,
-    vae_scale_factor_spatial = None,
+    transformer_patch_size=None,
+    vae_scale_factor_temporal=None,
+    vae_scale_factor_spatial=None,
 ) -> torch.Tensor:
     # if isinstance(generator, list):
     #     # TODO: support this
@@ -317,16 +343,34 @@ def prepare_masks(
     mask_list = []
     for mask_, reference_images_batch in zip(mask, reference_images):
         num_channels, num_frames, height, width = mask_.shape
-        new_num_frames = (num_frames + vae_scale_factor_temporal - 1) // vae_scale_factor_temporal
-        new_height = height // (vae_scale_factor_spatial * transformer_patch_size) * transformer_patch_size
-        new_width = width // (vae_scale_factor_spatial * transformer_patch_size) * transformer_patch_size
+        new_num_frames = (
+            num_frames + vae_scale_factor_temporal - 1
+        ) // vae_scale_factor_temporal
+        new_height = (
+            height
+            // (vae_scale_factor_spatial * transformer_patch_size)
+            * transformer_patch_size
+        )
+        new_width = (
+            width
+            // (vae_scale_factor_spatial * transformer_patch_size)
+            * transformer_patch_size
+        )
         mask_ = mask_[0, :, :, :]
         mask_ = mask_.view(
-            num_frames, new_height, vae_scale_factor_spatial, new_width, vae_scale_factor_spatial
+            num_frames,
+            new_height,
+            vae_scale_factor_spatial,
+            new_width,
+            vae_scale_factor_spatial,
         )
-        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(0, 1)  # [8x8, num_frames, new_height, new_width]
+        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(
+            0, 1
+        )  # [8x8, num_frames, new_height, new_width]
         mask_ = torch.nn.functional.interpolate(
-            mask_.unsqueeze(0), size=(new_num_frames, new_height, new_width), mode="nearest-exact"
+            mask_.unsqueeze(0),
+            size=(new_num_frames, new_height, new_width),
+            mode="nearest-exact",
         ).squeeze(0)
         num_ref_images = len(reference_images_batch)
         if num_ref_images > 0:
@@ -337,17 +381,17 @@ def prepare_masks(
 
 
 def preprocess_conditions(
-    video = None,
-    mask = None,
-    reference_images = None,
+    video=None,
+    mask=None,
+    reference_images=None,
     batch_size: int = 1,
     height: int = 480,
     width: int = 832,
     num_frames: int = 81,
-    dtype = None,
-    device = None,
-    video_processor = None,
-    base = None,
+    dtype=None,
+    device=None,
+    video_processor=None,
+    base=None,
 ):
     if video is not None:
         # base = self.vae_scale_factor_spatial * (
@@ -359,7 +403,9 @@ def preprocess_conditions(
 
         if video_height * video_width > height * width:
             scale = min(width / video_width, height / video_height)
-            video_height, video_width = int(video_height * scale), int(video_width * scale)
+            video_height, video_width = int(video_height * scale), int(
+                video_width * scale
+            )
 
         if video_height % base != 0 or video_width % base != 0:
             # logger.warning(
@@ -371,11 +417,15 @@ def preprocess_conditions(
         assert video_height * video_width <= height * width
 
         video = video_processor.preprocess_video(video, video_height, video_width)
-        image_size = (video_height, video_width)  # Use the height/width of video (with possible rescaling)
+        image_size = (
+            video_height,
+            video_width,
+        )  # Use the height/width of video (with possible rescaling)
     else:
-        video = torch.zeros(batch_size, 3, num_frames, height, width, dtype=dtype, device=device)
+        video = torch.zeros(
+            batch_size, 3, num_frames, height, width, dtype=dtype, device=device
+        )
         image_size = (height, width)  # Use the height/width provider by user
-
 
     if mask is not None:
         mask = video_processor.preprocess_video(mask, image_size[0], image_size[1])
@@ -390,7 +440,9 @@ def preprocess_conditions(
     # corresponds to list of conditioning images per video
     if reference_images is None or isinstance(reference_images, Image.Image):
         reference_images = [[reference_images] for _ in range(video.shape[0])]
-    elif isinstance(reference_images, (list, tuple)) and isinstance(next(iter(reference_images)), Image.Image):
+    elif isinstance(reference_images, (list, tuple)) and isinstance(
+        next(iter(reference_images)), Image.Image
+    ):
         reference_images = [reference_images]
     elif (
         isinstance(reference_images, (list, tuple))
@@ -409,7 +461,9 @@ def preprocess_conditions(
             f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
         )
 
-    ref_images_lengths = [len(reference_images_batch) for reference_images_batch in reference_images]
+    ref_images_lengths = [
+        len(reference_images_batch) for reference_images_batch in reference_images
+    ]
     if any(l != ref_images_lengths[0] for l in ref_images_lengths):
         raise ValueError(
             f"All batches of `reference_images` should have the same length, but got {ref_images_lengths}. Support for this "
@@ -427,8 +481,13 @@ def preprocess_conditions(
             scale = min(image_size[0] / img_height, image_size[1] / img_width)
             new_height, new_width = int(img_height * scale), int(img_width * scale)
             resized_image = torch.nn.functional.interpolate(
-                image, size=(new_height, new_width), mode="bilinear", align_corners=False
-            ).squeeze(0)  # [C, H, W]
+                image,
+                size=(new_height, new_width),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(
+                0
+            )  # [C, H, W]
             top = (image_size[0] - new_height) // 2
             left = (image_size[1] - new_width) // 2
             canvas = torch.ones(3, *image_size, device=device, dtype=dtype)
@@ -442,9 +501,9 @@ def preprocess_conditions(
 def prepare_video_latents(
     video: torch.Tensor,
     mask: torch.Tensor,
-    reference_images = None,
-    device = None,
-    vae = None,
+    reference_images=None,
+    device=None,
+    vae=None,
 ) -> torch.Tensor:
     # device = device or self._execution_device
 
@@ -471,12 +530,12 @@ def prepare_video_latents(
     vae_dtype = vae.dtype
     video = video.to(dtype=vae_dtype)
 
-    latents_mean = torch.tensor(vae.config.latents_mean, device=device, dtype=torch.float32).view(
-        1, vae.config.z_dim, 1, 1, 1
-    )
-    latents_std = 1.0 / torch.tensor(vae.config.latents_std, device=device, dtype=torch.float32).view(
-        1, vae.config.z_dim, 1, 1, 1
-    )
+    latents_mean = torch.tensor(
+        vae.config.latents_mean, device=device, dtype=torch.float32
+    ).view(1, vae.config.z_dim, 1, 1, 1)
+    latents_std = 1.0 / torch.tensor(
+        vae.config.latents_std, device=device, dtype=torch.float32
+    ).view(1, vae.config.z_dim, 1, 1, 1)
 
     if mask is None:
         # latents = retrieve_latents(vae.encode(video), generator, sample_mode="argmax").unbind(0)
@@ -494,7 +553,6 @@ def prepare_video_latents(
         reactive = ((reactive.float() - latents_mean) * latents_std).to(vae_dtype)
         latents = torch.cat([inactive, reactive], dim=1)
 
-
     latent_list = []
     for latent, reference_images_batch in zip(latents, reference_images):
         for reference_image in reference_images_batch:
@@ -503,9 +561,13 @@ def prepare_video_latents(
             reference_image = reference_image[None, :, None, :, :]  # [1, C, 1, H, W]
             # reference_latent = retrieve_latents(vae.encode(reference_image), generator, sample_mode="argmax")
             reference_latent = vae.encode(reference_image).latent_dist.sample()
-            reference_latent = ((reference_latent.float() - latents_mean) * latents_std).to(vae_dtype)
+            reference_latent = (
+                (reference_latent.float() - latents_mean) * latents_std
+            ).to(vae_dtype)
             reference_latent = reference_latent.squeeze(0)  # [C, 1, H, W]
-            reference_latent = torch.cat([reference_latent, torch.zeros_like(reference_latent)], dim=0)
+            reference_latent = torch.cat(
+                [reference_latent, torch.zeros_like(reference_latent)], dim=0
+            )
             latent = torch.cat([reference_latent.squeeze(0), latent], dim=1)
         latent_list.append(latent)
 
@@ -514,30 +576,38 @@ def prepare_video_latents(
 
 def blend_h(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
     """水平方向融合 Latents，支持 [B, C, F, H, W]"""
-    weight_b = (torch.arange(overlap_size).view(1, 1, 1, 1, -1) / overlap_size).to(b.device, dtype=b.dtype)
-    b[:, :, :, :, :overlap_size] = (1 - weight_b) * a[:, :, :, :, -overlap_size:] + weight_b * b[:, :, :, :, :overlap_size]
+    weight_b = (torch.arange(overlap_size).view(1, 1, 1, 1, -1) / overlap_size).to(
+        b.device, dtype=b.dtype
+    )
+    b[:, :, :, :, :overlap_size] = (1 - weight_b) * a[
+        :, :, :, :, -overlap_size:
+    ] + weight_b * b[:, :, :, :, :overlap_size]
     return b
 
 
 def blend_v(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
     """垂直方向融合 Latents，支持 [B, C, F, H, W]"""
-    weight_b = (torch.arange(overlap_size).view(1, 1, 1, -1, 1) / overlap_size).to(b.device, dtype=b.dtype)
-    b[:, :, :, :overlap_size, :] = (1 - weight_b) * a[:, :, :, -overlap_size:, :] + weight_b * b[:, :, :, :overlap_size, :]
+    weight_b = (torch.arange(overlap_size).view(1, 1, 1, -1, 1) / overlap_size).to(
+        b.device, dtype=b.dtype
+    )
+    b[:, :, :, :overlap_size, :] = (1 - weight_b) * a[
+        :, :, :, -overlap_size:, :
+    ] + weight_b * b[:, :, :, :overlap_size, :]
     return b
 
 
 def run_wan_pipeline(
-    cond_frames, 
-    mask_frames, 
-    prompt_embeds, 
-    transformer, 
-    vae, 
-    noise_scheduler, 
+    cond_frames,
+    mask_frames,
+    prompt_embeds,
+    transformer,
+    vae,
+    noise_scheduler,
     videoprocessor,
     vae_scale_factor_spatial,
     vae_scale_factor_temporal,
     transformer_patch_size,
-    vae_cpu_offload="none"
+    vae_cpu_offload="none",
 ):
     """封装单次 Wan 去噪 Pipeline 以供分块调用"""
     # 此时进入的 cond_frames 是正确的 [B, C, F, H, W]
@@ -552,7 +622,7 @@ def run_wan_pipeline(
         # 所以我们在这里做一次临时的维度翻转：[B, C, F, H, W] -> [B, F, C, H, W]
         cond_frames_vp = cond_frames.permute(0, 2, 1, 3, 4)
         mask_frames_vp = mask_frames.permute(0, 2, 1, 3, 4)
-        
+
         condition_video, mask, reference_images = preprocess_conditions(
             video=cond_frames_vp,
             mask=mask_frames_vp,
@@ -566,12 +636,28 @@ def run_wan_pipeline(
             video_processor=videoprocessor,
             base=vae_scale_factor_spatial * transformer_patch_size,
         )
-    
-        conditioning_latents = prepare_video_latents(condition_video, mask, reference_images, DEVICE, vae)
-        mask_for_transformer = prepare_masks(mask, reference_images, transformer_patch_size, vae_scale_factor_temporal, vae_scale_factor_spatial).to(DEVICE, dtype=DTYPE)
-        control_hidden_states = torch.cat([conditioning_latents, mask_for_transformer], dim=1).to(DTYPE)
 
-    del condition_video, mask, reference_images, conditioning_latents, mask_for_transformer
+        conditioning_latents = prepare_video_latents(
+            condition_video, mask, reference_images, DEVICE, vae
+        )
+        mask_for_transformer = prepare_masks(
+            mask,
+            reference_images,
+            transformer_patch_size,
+            vae_scale_factor_temporal,
+            vae_scale_factor_spatial,
+        ).to(DEVICE, dtype=DTYPE)
+        control_hidden_states = torch.cat(
+            [conditioning_latents, mask_for_transformer], dim=1
+        ).to(DTYPE)
+
+    del (
+        condition_video,
+        mask,
+        reference_images,
+        conditioning_latents,
+        mask_for_transformer,
+    )
 
     if vae_cpu_offload == "manual":
         vae.to("cpu")
@@ -581,7 +667,7 @@ def run_wan_pipeline(
     f = (num_frames - 1) // vae_scale_factor_temporal + 1
     h = height // vae_scale_factor_spatial
     w = width // vae_scale_factor_spatial
-    
+
     latents = torch.randn(1, c, f, h, w, device=DEVICE, dtype=DTYPE)
 
     for i, t in enumerate(noise_scheduler.timesteps):
@@ -598,26 +684,49 @@ def run_wan_pipeline(
         del model_pred, timestep_tensor
 
     del control_hidden_states
-    
+
     return latents
 
 
 def spatial_tiled_process(
-    cond_frames, mask_frames, tile_num, tile_overlap, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor,
-    vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload="none"
+    cond_frames,
+    mask_frames,
+    tile_num,
+    tile_overlap,
+    prompt_embeds,
+    transformer,
+    vae,
+    noise_scheduler,
+    videoprocessor,
+    vae_scale_factor_spatial,
+    vae_scale_factor_temporal,
+    transformer_patch_size,
+    vae_cpu_offload="none",
 ):
     """处理单段视频的空间分块"""
     if tile_num == 1:
-        return run_wan_pipeline(cond_frames, mask_frames, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload)
+        return run_wan_pipeline(
+            cond_frames,
+            mask_frames,
+            prompt_embeds,
+            transformer,
+            vae,
+            noise_scheduler,
+            videoprocessor,
+            vae_scale_factor_spatial,
+            vae_scale_factor_temporal,
+            transformer_patch_size,
+            vae_cpu_offload,
+        )
 
     height = cond_frames.shape[3]
     width = cond_frames.shape[4]
-    
+
     # 确保切块大小能够被 VAE 和 Transformer Patch 的乘积（通常是 16）整除
     base = vae_scale_factor_spatial * transformer_patch_size
     tile_size = (
         int((height + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
-        int((width + tile_overlap * (tile_num - 1)) / tile_num) // base * base
+        int((width + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
     )
     tile_stride = (tile_size[0] - tile_overlap, tile_size[1] - tile_overlap)
 
@@ -627,13 +736,34 @@ def spatial_tiled_process(
         for j in range(tile_num):
             h_start = min(i * tile_stride[0], height - tile_size[0])
             w_start = min(j * tile_stride[1], width - tile_size[1])
-            
-            cond_tile = cond_frames[:, :, :, h_start : h_start + tile_size[0], w_start : w_start + tile_size[1]]
-            mask_tile = mask_frames[:, :, :, h_start : h_start + tile_size[0], w_start : w_start + tile_size[1]]
+
+            cond_tile = cond_frames[
+                :,
+                :,
+                :,
+                h_start : h_start + tile_size[0],
+                w_start : w_start + tile_size[1],
+            ]
+            mask_tile = mask_frames[
+                :,
+                :,
+                :,
+                h_start : h_start + tile_size[0],
+                w_start : w_start + tile_size[1],
+            ]
 
             tile_latent = run_wan_pipeline(
-                cond_tile, mask_tile, prompt_embeds, transformer, vae, noise_scheduler, videoprocessor,
-                vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload
+                cond_tile,
+                mask_tile,
+                prompt_embeds,
+                transformer,
+                vae,
+                noise_scheduler,
+                videoprocessor,
+                vae_scale_factor_spatial,
+                vae_scale_factor_temporal,
+                transformer_patch_size,
+                vae_cpu_offload,
             )
             rows.append(tile_latent)
             del cond_tile, mask_tile
@@ -641,8 +771,14 @@ def spatial_tiled_process(
         cols.append(rows)
 
     # 映射回 Latent 空间的 stride 和 overlap
-    latent_stride = (tile_stride[0] // vae_scale_factor_spatial, tile_stride[1] // vae_scale_factor_spatial)
-    latent_overlap = (tile_overlap // vae_scale_factor_spatial, tile_overlap // vae_scale_factor_spatial)
+    latent_stride = (
+        tile_stride[0] // vae_scale_factor_spatial,
+        tile_stride[1] // vae_scale_factor_spatial,
+    )
+    latent_overlap = (
+        tile_overlap // vae_scale_factor_spatial,
+        tile_overlap // vae_scale_factor_spatial,
+    )
 
     # 融合 Latents
     results_cols = []
@@ -660,12 +796,12 @@ def spatial_tiled_process(
     for i, rows in enumerate(results_cols):
         for j, tile in enumerate(rows):
             if i < len(results_cols) - 1:
-                tile = tile[:, :, :, :latent_stride[0], :]
+                tile = tile[:, :, :, : latent_stride[0], :]
             if j < len(rows) - 1:
-                tile = tile[:, :, :, :, :latent_stride[1]]
+                tile = tile[:, :, :, :, : latent_stride[1]]
             rows[j] = tile
         pixels.append(torch.cat(rows, dim=4))
-    
+
     return torch.cat(pixels, dim=3)
 
 
@@ -693,7 +829,9 @@ def main(
         torch.cuda.manual_seed_all(seed)
 
     os.makedirs(save_dir, exist_ok=True)
-    video_name = input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
+    video_name = (
+        input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
+    )
     frames_sbs_path = os.path.join(save_dir, f"{video_name}_2_sbs.mp4")
 
     if os.path.exists(frames_sbs_path) and not overwrite:
@@ -701,25 +839,36 @@ def main(
         return
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
-    text_encoder = UMT5EncoderModel.from_pretrained(pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE).to(DEVICE)
+    text_encoder = UMT5EncoderModel.from_pretrained(
+        pre_trained_path, subfolder="text_encoder", torch_dtype=DTYPE
+    ).to(DEVICE)
     text_encoder.eval()
     text_encoder.requires_grad_(False)
 
     print("Encoding prompt...")
     with torch.inference_mode():
         prompt_embeds, _ = encode_prompt(
-            [PROMPT], do_classifier_free_guidance=False, max_sequence_length=226,
-            device=DEVICE, dtype=DTYPE, tokenizer=tokenizer, text_encoder=text_encoder
+            [PROMPT],
+            do_classifier_free_guidance=False,
+            max_sequence_length=226,
+            device=DEVICE,
+            dtype=DTYPE,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
         )
 
     text_encoder.to("cpu")
     del text_encoder, tokenizer
     cleanup_cuda()
 
-    vae = AutoencoderKLWan.from_pretrained(pre_trained_path, subfolder="vae", torch_dtype=DTYPE, low_cpu_mem_usage=True).to(DEVICE)
+    vae = AutoencoderKLWan.from_pretrained(
+        pre_trained_path, subfolder="vae", torch_dtype=DTYPE, low_cpu_mem_usage=True
+    ).to(DEVICE)
     enable_vae_memory_features(vae)
 
-    transformer = load_transformer(transformer_path, transformer_dtype, transformer_cpu_offload)
+    transformer = load_transformer(
+        transformer_path, transformer_dtype, transformer_cpu_offload
+    )
 
     transformer.eval()
     vae.eval()
@@ -745,10 +894,12 @@ def main(
     total_frames = len(video_reader)
     frame_indices = list(range(total_frames))
     frames = video_reader.get_batch(frame_indices)
-    
 
     # [t,h,w,c] -> [1,c,t,h,w]
-    frames = torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float() / 255.0
+    frames = (
+        torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
+        / 255.0
+    )
 
     height, width = frames.shape[3] // 2, frames.shape[4] // 2
     frames_left = frames[:, :, :, :height, :width]
@@ -759,17 +910,17 @@ def main(
 
     base = vae_scale_factor_spatial * transformer_patch_size
     h_orig, w_orig = all_frames.shape[3], all_frames.shape[4]
-    
+
     # 1. 向上取整 (math.ceil)，倒推计算出能被 Tiling 完美拼接的“目标分辨率”
     min_tile_h = (h_orig + tile_overlap * (tile_num - 1)) / tile_num
     tile_size_h = math.ceil(min_tile_h / base) * base
-    
+
     min_tile_w = (w_orig + tile_overlap * (tile_num - 1)) / tile_num
     tile_size_w = math.ceil(min_tile_w / base) * base
-    
+
     tile_stride_h = tile_size_h - tile_overlap
     tile_stride_w = tile_size_w - tile_overlap
-    
+
     target_h = tile_stride_h * (tile_num - 1) + tile_size_h
     target_w = tile_stride_w * (tile_num - 1) + tile_size_w
 
@@ -778,48 +929,56 @@ def main(
     pad_w = target_w - w_orig
 
     if pad_h > 0 or pad_w > 0:
-        print(f"Padding resolution from {w_orig}x{h_orig} to {target_w}x{target_h} to perfectly match Tiling output.")
-        
+        print(
+            f"Padding resolution from {w_orig}x{h_orig} to {target_w}x{target_h} to perfectly match Tiling output."
+        )
+
         # 1. 临时取出 Batch 并对调通道和帧数维度: [1, C, F, H, W] -> [F, C, H, W] (变成标准的 4D 图片格式)
-        frames_4d = all_frames[0].permute(1, 0, 2, 3) 
-        
+        frames_4d = all_frames[0].permute(1, 0, 2, 3)
+
         # 2. 对 4D 张量进行边缘复制填充 (PyTorch 对此支持极其完美)
-        frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode='replicate')
-        
+        frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode="replicate")
+
         # 3. 还原回 5D 视频张量: [F, C, H_new, W_new] -> [1, C, F, H_new, W_new]
         all_frames = frames_4d.permute(1, 0, 2, 3).unsqueeze(0)
-        
+
         # Mask 填充 0 (constant 模式原生支持 5D，直接 pad 即可)
-        all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode='constant', value=0)
+        all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode="constant", value=0)
 
     noise_scheduler = FlowMatchScheduler()
-    noise_scheduler.set_timesteps(num_inference_steps=inference_steps, denoising_strength=1.0)
+    noise_scheduler.set_timesteps(
+        num_inference_steps=inference_steps, denoising_strength=1.0
+    )
 
     generated_video_chunks = []
-    
+
     print(f"Starting Temporal Chunking inference (Total Frames: {total_frames})...")
-    
+
     # 记录全局已经完美生成的有效帧数
     global_len = 0
-    
+
     while global_len < total_frames:
         if global_len == 0:
             # 第一段：从 0 开始
             cur_i = 0
             cur_chunk_size = min(frames_chunk, total_frames)
             # 安全修正（防止输入视频本身不到 81 帧）
-            valid_chunk_size = ((cur_chunk_size - 1) // vae_scale_factor_temporal) * vae_scale_factor_temporal + 1
+            valid_chunk_size = (
+                (cur_chunk_size - 1) // vae_scale_factor_temporal
+            ) * vae_scale_factor_temporal + 1
         else:
             # 正常步长推进
             cur_i = global_len - frames_overlap
-            
+
             # 如果按正常步长取，超出了总帧数，说明这是最后一段
             if cur_i + frames_chunk > total_frames:
                 # 强制把截取起点向前推，确保这一段刚好能取满 frames_chunk (81帧) 并直达视频结尾
                 cur_i = max(0, total_frames - frames_chunk)
-                
+
             cur_chunk_size = min(frames_chunk, total_frames - cur_i)
-            valid_chunk_size = ((cur_chunk_size - 1) // vae_scale_factor_temporal) * vae_scale_factor_temporal + 1
+            valid_chunk_size = (
+                (cur_chunk_size - 1) // vae_scale_factor_temporal
+            ) * vae_scale_factor_temporal + 1
 
         chunk_cond = all_frames[:, :, cur_i : cur_i + valid_chunk_size].clone()
         chunk_mask = all_masks[:, :, cur_i : cur_i + valid_chunk_size]
@@ -829,19 +988,34 @@ def main(
             # 真实重叠长度 = 已生成的总进度 - 当前段的倒推起点
             # (例如：已生成 81 帧，当前段为了凑 81 帧从第 9 帧开始取，那么重叠帧数就是 81 - 9 = 72 帧！)
             actual_overlap = global_len - cur_i
-            
+
             # 把已经生成的历史画面作为“绝对条件”覆盖到当前段的前面
             # 我们通过 torch.cat 临时拼一下历史结果以便提取
             temp_global_generated = torch.cat(generated_video_chunks, dim=2)
-            chunk_cond[:, :, :actual_overlap] = temp_global_generated[:, :, cur_i : global_len]
+            chunk_cond[:, :, :actual_overlap] = temp_global_generated[
+                :, :, cur_i:global_len
+            ]
             del temp_global_generated
 
-        print(f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames...")
-        
+        print(
+            f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames..."
+        )
+
         # --- 空间分块推理 ---
         chunk_latents = spatial_tiled_process(
-            chunk_cond, chunk_mask, tile_num, tile_overlap, prompt_embeds, transformer, vae, noise_scheduler, 
-            videoprocessor, vae_scale_factor_spatial, vae_scale_factor_temporal, transformer_patch_size, vae_cpu_offload
+            chunk_cond,
+            chunk_mask,
+            tile_num,
+            tile_overlap,
+            prompt_embeds,
+            transformer,
+            vae,
+            noise_scheduler,
+            videoprocessor,
+            vae_scale_factor_spatial,
+            vae_scale_factor_temporal,
+            transformer_patch_size,
+            vae_cpu_offload,
         )
 
         # --- 解码当前分段 ---
@@ -849,8 +1023,12 @@ def main(
             vae.to(DEVICE)
 
         with torch.inference_mode():
-            latents_mean = torch.tensor(vae.config.latents_mean, device=DEVICE, dtype=torch.float32).view(1, vae.config.z_dim, 1, 1, 1)
-            latents_std = torch.tensor(vae.config.latents_std, device=DEVICE, dtype=torch.float32).view(1, vae.config.z_dim, 1, 1, 1)
+            latents_mean = torch.tensor(
+                vae.config.latents_mean, device=DEVICE, dtype=torch.float32
+            ).view(1, vae.config.z_dim, 1, 1, 1)
+            latents_std = torch.tensor(
+                vae.config.latents_std, device=DEVICE, dtype=torch.float32
+            ).view(1, vae.config.z_dim, 1, 1, 1)
             chunk_latents = chunk_latents.float() * latents_std + latents_mean
             chunk_latents = chunk_latents.to(vae.dtype)
             video_chunk_tensor = vae.decode(chunk_latents, return_dict=False)[0]
@@ -877,7 +1055,9 @@ def main(
 
         # 保护机制：如果因为取整或视频极短导致无法前进，跳出避免死循环
         if global_len > 0 and actual_overlap >= valid_chunk_size:
-            print("Warning: Chunk progression stuck due to temporal scaling limits. Exiting loop.")
+            print(
+                "Warning: Chunk progression stuck due to temporal scaling limits. Exiting loop."
+            )
             break
 
     # 拼接所有时间分段
@@ -886,22 +1066,20 @@ def main(
     if pad_h > 0 or pad_w > 0:
         print(f"Removing padding, restoring resolution to {w_orig}x{h_orig}...")
         final_video = final_video[:, :, :, :h_orig, :w_orig]
-    
+
     print("\nExporting final video...")
-    
+
     # 1. 取出 batch 0，形状变为 [C, F, H, W]
     video_tensor = final_video[0]
-    
+
     # 2. 转换为 numpy 并调整维度顺序为 [F, H, W, C]
     video_np = video_tensor.permute(1, 2, 3, 0).cpu().float().numpy()
     video_left_np = frames_left[0].permute(1, 2, 3, 0).cpu().float().numpy()
-
 
     frames_sbs = np.concatenate([video_left_np, video_np], axis=2)
     frames_sbs_frames_list = [frames_sbs[i] for i in range(frames_sbs.shape[0])]
     # print(frames_sbs_frames_list[0].shape)
     export_to_video(frames_sbs_frames_list, frames_sbs_path, fps=int(fps))
-
 
     video_left_np[:, :, :, 1] = 0
     video_left_np[:, :, :, 2] = 0

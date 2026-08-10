@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 # from torchvision.io import write_video
 
 from diffusers.training_utils import set_seed
@@ -12,7 +13,9 @@ from fire import Fire
 from decord import VideoReader, cpu
 
 from dependency.DepthCrafter.depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
-from dependency.DepthCrafter.depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
+from dependency.DepthCrafter.depthcrafter.unet import (
+    DiffusersUNetSpatioTemporalConditionModelDepthCrafter,
+)
 from dependency.DepthCrafter.depthcrafter.utils import vis_sequence_depth
 
 from Forward_Warp import forward_warp
@@ -22,7 +25,11 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
     if dataset == "open":
         print("==> processing video: ", video_path, flush=True)
         vid = VideoReader(video_path, ctx=cpu(0))
-        print("==> original video shape: ", (len(vid), *vid.get_batch([0]).shape[1:]), flush=True)
+        print(
+            "==> original video shape: ",
+            (len(vid), *vid.get_batch([0]).shape[1:]),
+            flush=True,
+        )
         original_height, original_width = vid.get_batch([0]).shape[1:3]
         height = round(original_height / 64) * 64
         width = round(original_width / 64) * 64
@@ -41,12 +48,14 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
     stride = max(stride, 1)
     frames_idx = list(range(0, len(vid), stride))
     print(
-        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}", flush=True
+        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}",
+        flush=True,
     )
     if process_length != -1 and process_length < len(frames_idx):
         frames_idx = frames_idx[:process_length]
     print(
-        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}", flush=True
+        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}",
+        flush=True,
     )
     frames = vid.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
 
@@ -148,19 +157,31 @@ class DepthCrafterDemo:
         # resize the depth to the original size
         resized_res = []
         for i in range(0, len(res), decode_chunk_size):
-            tensor_res = torch.tensor(res[i:i+decode_chunk_size]).unsqueeze(1).float().contiguous().cuda()
-            tensor_res = F.interpolate(tensor_res, size=(original_height, original_width), mode='bilinear', align_corners=False)
-            resized_res.append(tensor_res.cpu().numpy()[:,0,:,:])
+            tensor_res = (
+                torch.tensor(res[i : i + decode_chunk_size])
+                .unsqueeze(1)
+                .float()
+                .contiguous()
+                .cuda()
+            )
+            tensor_res = F.interpolate(
+                tensor_res,
+                size=(original_height, original_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            resized_res.append(tensor_res.cpu().numpy()[:, 0, :, :])
             del tensor_res
         res = np.concatenate(resized_res, axis=0)
-        
+
         # normalize the depth map to [0, 1] across the whole video
         res = (res - res.min()) / (res.max() - res.min())
         # visualize the depth map and save the results
         vis = vis_sequence_depth(res)
         # save the depth map and visualization with the target FPS
         save_path = os.path.join(
-            os.path.dirname(output_video_path), os.path.splitext(os.path.basename(output_video_path))[0]
+            os.path.dirname(output_video_path),
+            os.path.splitext(os.path.basename(output_video_path))[0],
         )
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -169,7 +190,7 @@ class DepthCrafterDemo:
             # write_video(save_path + "_depth_vis.mp4", vis*255.0, fps=target_fps, video_codec="h264", options={"crf": "16"})
 
         return res, vis
-    
+
 
 class ForwardWarpStereo(nn.Module):
     def __init__(self, eps=1e-6, occlu_map=False):
@@ -208,18 +229,19 @@ class ForwardWarpStereo(nn.Module):
             occlu_map.clamp_(0.0, 1.0)
             occlu_map = 1.0 - occlu_map
             return res, occlu_map
-        
+
 
 def DepthSplatting(
-        input_video_path, 
-        output_video_path, 
-        video_depth, 
-        depth_vis, 
-        max_disp, 
-        process_length, 
-        batch_size,
-        target_fps):
-    '''
+    input_video_path,
+    output_video_path,
+    video_depth,
+    depth_vis,
+    max_disp,
+    process_length,
+    batch_size,
+    target_fps,
+):
+    """
     Depth-Based Video Splatting Using the Video Depth.
     Args:
         input_video_path: Path to the input video.
@@ -227,8 +249,8 @@ def DepthSplatting(
         video_depth: Video depth with shape of [T, H, W] in [0, 1].
         depth_vis: Visualized video depth with shape of [T, H, W, 3] in [0, 1].
         process_length: The length of video to process.
-        batch_size: The batch size for splatting to save GPU memory. 
-    '''
+        batch_size: The batch size for splatting to save GPU memory.
+    """
     print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
@@ -241,8 +263,8 @@ def DepthSplatting(
         frames_idx = frames_idx[:process_length]
 
     input_frames = vid_reader.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
-    video_depth = video_depth[:len(input_frames)]
-    depth_vis = depth_vis[:len(input_frames)]
+    video_depth = video_depth[: len(input_frames)]
+    depth_vis = depth_vis[: len(input_frames)]
 
     stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
 
@@ -251,17 +273,17 @@ def DepthSplatting(
 
     # Initialize OpenCV VideoWriter
     out = cv2.VideoWriter(
-        output_video_path, 
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps, 
-        (width * 2, height * 2)
+        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width * 2, height * 2)
     )
 
     for i in range(0, num_frames, batch_size):
-        print(f"==> splatting frames {i + 1}-{min(i + batch_size, num_frames)} / {num_frames}", flush=True)
-        batch_frames = input_frames[i:i+batch_size]
-        batch_depth = video_depth[i:i+batch_size]
-        batch_depth_vis = depth_vis[i:i+batch_size]
+        print(
+            f"==> splatting frames {i + 1}-{min(i + batch_size, num_frames)} / {num_frames}",
+            flush=True,
+        )
+        batch_frames = input_frames[i : i + batch_size]
+        batch_depth = video_depth[i : i + batch_size]
+        batch_depth_vis = depth_vis[i : i + batch_size]
 
         left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
         disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
@@ -273,11 +295,17 @@ def DepthSplatting(
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
 
         right_video = right_video.cpu().permute(0, 2, 3, 1).numpy()
-        occlusion_mask = occlusion_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
+        occlusion_mask = (
+            occlusion_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
+        )
 
         for j in range(len(batch_frames)):
-            video_grid_top = np.concatenate([batch_frames[j], batch_depth_vis[j]], axis=1)
-            video_grid_bottom = np.concatenate([occlusion_mask[j], right_video[j]], axis=1)
+            video_grid_top = np.concatenate(
+                [batch_frames[j], batch_depth_vis[j]], axis=1
+            )
+            video_grid_bottom = np.concatenate(
+                [occlusion_mask[j], right_video[j]], axis=1
+            )
             video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
 
             video_grid_uint8 = np.clip(video_grid * 255.0, 0, 255).astype(np.uint8)
@@ -348,14 +376,14 @@ def main(
 
     print("==> running depth-based forward splatting", flush=True)
     DepthSplatting(
-        input_video_path, 
-        output_video_path, 
-        video_depth, 
+        input_video_path,
+        output_video_path,
+        video_depth,
         depth_vis,
         max_disp,
-        process_length, 
+        process_length,
         batch_size,
-        target_fps
+        target_fps,
     )
 
 

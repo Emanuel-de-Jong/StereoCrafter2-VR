@@ -25,17 +25,10 @@ def make_even(value):
     return value if value % 2 == 0 else value + 1
 
 
-def get_target_size(width, height, target_size):
-    scale = target_size / max(width, height)
+def get_target_size(width, height, target_width, target_height):
+    scale = min(target_width / width, target_height / height)
     target_width = make_even(width * scale)
     target_height = make_even(height * scale)
-
-    if width >= height:
-        target_width = target_size
-        target_height = make_even(height * scale)
-    else:
-        target_width = make_even(width * scale)
-        target_height = target_size
 
     return target_width, target_height
 
@@ -44,7 +37,8 @@ def main(
     input_video_path="outputs/vid_2_sbs.mp4",
     output_video_path="outputs/vid_3_upscale.mp4",
     video2x_path="dependency/Video2X/Video2X-x86_64.AppImage",
-    target_size=2560,
+    target_width=5120,
+    target_height=2560,
     realesrgan_model="realesr-animevideov3",
     gpu=0,
     overwrite=False,
@@ -61,23 +55,34 @@ def main(
     width, height = get_video_size(input_video_path)
     print(f"Input video size: {width}x{height}", flush=True)
 
-    if max(width, height) >= target_size:
-        print(f"Skipping upscale because one dimension is already {target_size}px or larger.", flush=True)
+    if width >= target_width or height >= target_height:
+        print(
+            f"Skipping upscale because the video is already {target_width}px wide or {target_height}px high.",
+            flush=True,
+        )
         return
 
-    target_width, target_height = get_target_size(width, height, target_size)
-    print(f"Upscaling to: {target_width}x{target_height}", flush=True)
+    output_width, output_height = get_target_size(
+        width, height, target_width, target_height
+    )
+    print(f"Upscaling to: {output_width}x{output_height}", flush=True)
 
     os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
 
     command = [
         video2x_path,
-        "-i", input_video_path,
-        "-o", output_video_path,
-        "-p", "realesrgan",
-        "-w", str(target_width),
-        "-h", str(target_height),
-        "--realesrgan-model", realesrgan_model,
+        "-i",
+        input_video_path,
+        "-o",
+        output_video_path,
+        "-p",
+        "realesrgan",
+        "-w",
+        str(output_width),
+        "-h",
+        str(output_height),
+        "--realesrgan-model",
+        realesrgan_model,
     ]
 
     if gpu is not None:

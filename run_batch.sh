@@ -9,14 +9,14 @@ shopt -s nullglob
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
-    # Check if a file actually exists to avoid running on literal '*.mp4' if empty
-    [ -e "$video" ] || continue
+	# Check if a file actually exists to avoid running on literal '*.mp4' if empty
+	[ -e "$video" ] || continue
 
 	filename=$(basename "$video")
-    basename="${filename%.*}"
+	basename="${filename%.*}"
 	output_file="$OUTPUT_DIR/${basename}_1_splatting.mp4"
 
-    echo "Processing $video..."
+	echo "Processing $video..."
 
 	python -u s1_depth_splatting_inference.py \
 		--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
@@ -34,7 +34,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 		--transformer_path ./weights/StereoCrafter2-FP8 \
 		--input_video_path "$output_file" \
-        --save_dir "$OUTPUT_DIR" \
+		--save_dir "$OUTPUT_DIR" \
 		--tile_num 2 \
 		--transformer_dtype auto \
 		--transformer_cpu_offload none \
@@ -44,6 +44,6 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--input_video_path "$OUTPUT_DIR/${basename}_2_sbs.mp4" \
 		--output_video_path "$OUTPUT_DIR/${basename}_3_upscale.mp4"
 
-    echo "Finished $video"
-    echo "-----------------------------------"
+	echo "Finished $video"
+	echo "-----------------------------------"
 done

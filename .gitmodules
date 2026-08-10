@@ -3,4 +3,4 @@
 	url = https://github.com/Tencent/DepthCrafter
 [submodule "dependency/Forward-Warp"]
 	path = dependency/Forward-Warp
-	url = https://github.com/wbhu/Forward-Warp.git
+	url = https://github.com/TencentARC/Forward-Warp.git

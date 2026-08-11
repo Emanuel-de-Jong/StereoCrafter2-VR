@@ -15,8 +15,8 @@ from s0_utils.monitor import monitor_step
 
 
 def main(
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_2_sbs.mkv"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_3_interp.mp4"),
     video2x_path: str = str(g.VIDEO2X_PATH),
     target_fps: int = 60,
     rife_model: str = "rife-v4.25",
@@ -319,4 +319,4 @@ def conform_video_fps(input_video_path, output_video_path, target_fps, crf, pres
 
 
 if __name__ == "__main__":
-    Fire(monitor_step("Step 4 - Interpolation")(main))
+    Fire(monitor_step("Step 3 - Interpolation")(main))

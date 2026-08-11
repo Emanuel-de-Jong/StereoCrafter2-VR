@@ -1,5 +1,6 @@
 import gc
 import cv2
+import json
 import os
 import sys
 from pathlib import Path
@@ -109,6 +110,8 @@ def main(
             f"==> auto convergence ({convergence_mode}): {convergence:.3f}",
             flush=True,
         )
+
+    save_splatting_metadata(output_video_path, convergence)
 
     print("==> running depth-based forward splatting", flush=True)
     DepthSplatting(
@@ -429,6 +432,15 @@ class ForwardWarpStereo(nn.Module):
             occlu_map.clamp_(0.0, 1.0)
             occlu_map = 1.0 - occlu_map
             return res, occlu_map
+
+
+def save_splatting_metadata(output_video_path, convergence):
+    save_path = os.path.join(
+        os.path.dirname(output_video_path),
+        os.path.splitext(os.path.basename(output_video_path))[0],
+    )
+    with open(save_path + "_meta.json", "w") as meta_file:
+        json.dump({"convergence": float(convergence)}, meta_file)
 
 
 def estimate_convergence(

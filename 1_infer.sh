@@ -53,29 +53,24 @@ python -u s1_pipeline/s2_inpainting.py \
 	--inpaint_scale 1.0 \
 	--inference_steps 7
 
-printf "\n\n=== STEP 3: GREENSCREEN ===\n"
-python -u s1_pipeline/s3_greenscreen.py \
+printf "\n\n=== STEP 3: INTERPOLATION ===\n"
+python -u s1_pipeline/s3_interpolation.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mkv" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mkv" \
-	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
-	--enabled True
-
-printf "\n\n=== STEP 4: INTERPOLATION ===\n"
-python -u s1_pipeline/s4_interpolation.py \
-	--input_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mkv" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_4_interp.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_interp.mp4" \
 	--target_fps 60
 
-printf "\n\n=== STEP 5: UPSCALE ===\n"
-python -u s1_pipeline/s5_upscale.py \
-	--input_video_path "$OUTPUT_DIR/${BASENAME}_4_interp.mp4" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
+printf "\n\n=== STEP 4: UPSCALE ===\n"
+python -u s1_pipeline/s4_upscale.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_3_interp.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_4_upscale.mp4" \
 	--realesrgan_model realesr-animevideov3
 
-printf "\n\n=== STEP 6: GREEN CLEANUP ===\n"
-python -u s1_pipeline/s6_green_cleanup.py \
-	--input_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_6_result.mp4" \
+printf "\n\n=== STEP 5: GREENSCREEN ===\n"
+python -u s1_pipeline/s5_greenscreen.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_4_upscale.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_result.mp4" \
+	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
+	--source_fps 30 \
 	--enabled True
 
 CONVERT_END_SECONDS=$(date +%s)
@@ -83,5 +78,5 @@ CONVERT_DURATION_SECONDS=$((CONVERT_END_SECONDS - CONVERT_START_SECONDS))
 
 printf "\n\n=== FULL CONVERT SUMMARY ===\n"
 printf "Input: %s\n" "$INPUT_VIDEO_PATH"
-printf "Output: %s\n" "$OUTPUT_DIR/${BASENAME}_6_result.mp4"
+printf "Output: %s\n" "$OUTPUT_DIR/${BASENAME}_5_result.mp4"
 printf "Duration: %s\n" "$(format_duration "$CONVERT_DURATION_SECONDS")"

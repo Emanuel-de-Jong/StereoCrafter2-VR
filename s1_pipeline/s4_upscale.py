@@ -14,8 +14,8 @@ from s0_utils.monitor import monitor_step
 
 
 def main(
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_interp.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_upscale.mp4"),
     video2x_path: str = str(g.VIDEO2X_PATH),
     target_width: int = 5120,
     target_height: int = 2560,
@@ -305,4 +305,4 @@ def resize_video(input_video_path, output_video_path, width, height, crf, preset
 
 
 if __name__ == "__main__":
-    Fire(monitor_step("Step 5 - Upscale")(main))
+    Fire(monitor_step("Step 4 - Upscale")(main))

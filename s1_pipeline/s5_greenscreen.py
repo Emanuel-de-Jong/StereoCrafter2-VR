@@ -1,9 +1,12 @@
+import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import cv2
+import imageio_ffmpeg
 import numpy as np
 import torch
 from fire import Fire
@@ -13,15 +16,17 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import s0_utils.global_params as g
 from s0_utils.helpers import (
+    RawVideoWriter,
     parse_bool,
+    run_command,
     should_skip_output,
 )
 from s0_utils.monitor import monitor_step
 
 
 def main(
-    input_video_path=str(g.OUTPUTS_DIR / "vid_2_sbs.mp4"),
-    output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    input_video_path=str(g.OUTPUTS_DIR / "vid_4_upscale.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_5_result.mp4"),
     depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
     enabled=True,
     model_type="detr",
@@ -41,13 +46,21 @@ def main(
     mask_erode=3,
     mask_dilate=3,
     temporal_smoothing=0.3,
+    temporal_smoothing_reference_fps=30.0,
     stereo_mask_mode="depth",
     max_disp=26,
     max_disp_reference_width=1920,
+    convergence=0.5,
+    source_fps=30.0,
+    write_metadata=True,
+    metadata_items="",
+    crf=12,
+    preset="slow",
     device="cuda",
     overwrite=False,
 ):
     enabled = parse_bool(enabled)
+    write_metadata = parse_bool(write_metadata)
     overwrite = parse_bool(overwrite)
 
     if should_skip_output(output_video_path, overwrite):
@@ -74,6 +87,7 @@ def main(
         raise ValueError(f"Unknown selection_mode: {selection_mode}")
 
     green_color = parse_color(green)
+    convergence = load_convergence(depth_npz_path, convergence)
     foreground_class_set = parse_classes(foreground_classes)
     depth_maps = load_depth_maps(depth_npz_path)
 
@@ -92,8 +106,24 @@ def main(
         raise ValueError(f"Could not open video: {input_video_path}")
 
     fps, width, height = get_video_properties(video)
-    writer = cv2.VideoWriter(
-        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    effective_temporal_smoothing = temporal_smoothing
+    if (
+        0.0 < temporal_smoothing < 1.0
+        and fps > 0
+        and temporal_smoothing_reference_fps > 0
+    ):
+        effective_temporal_smoothing = temporal_smoothing ** (
+            temporal_smoothing_reference_fps / fps
+        )
+    writer = RawVideoWriter(
+        output_video_path,
+        width,
+        height,
+        fps,
+        codec="libx264",
+        crf=crf,
+        preset=preset,
+        pixel_format="yuv420p",
     )
 
     previous_left_mask = None
@@ -110,7 +140,12 @@ def main(
                 cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             )
             left_frame, right_frame = split_sbs_frame(frame_rgb)
-            depth_index = min(frame_index, len(depth_maps) - 1)
+            if source_fps > 0 and fps > 0:
+                depth_index = min(
+                    round(frame_index * source_fps / fps), len(depth_maps) - 1
+                )
+            else:
+                depth_index = min(frame_index, len(depth_maps) - 1)
             depth_frame = resize_depth(
                 depth_maps[depth_index], left_frame.shape[0], left_frame.shape[1]
             )
@@ -142,7 +177,11 @@ def main(
                 right_mask = left_mask.copy()
             elif stereo_mask_mode == "depth":
                 right_mask = project_mask_to_right_eye(
-                    left_mask, depth_frame, max_disp, max_disp_reference_width
+                    left_mask,
+                    depth_frame,
+                    max_disp,
+                    max_disp_reference_width,
+                    convergence,
                 )
             else:
                 if model_type == "rvm":
@@ -175,7 +214,7 @@ def main(
             left_mask = process_mask(
                 left_mask,
                 previous_left_mask,
-                temporal_smoothing,
+                effective_temporal_smoothing,
                 mask_erode,
                 mask_dilate,
                 mask_feather,
@@ -183,7 +222,7 @@ def main(
             right_mask = process_mask(
                 right_mask,
                 previous_right_mask,
-                temporal_smoothing,
+                effective_temporal_smoothing,
                 mask_erode,
                 mask_dilate,
                 mask_feather,
@@ -192,8 +231,7 @@ def main(
             left_output = composite_green(left_frame, left_mask, green_color)
             right_output = composite_green(right_frame, right_mask, green_color)
             output_rgb = np.concatenate([left_output, right_output], axis=1)
-            output_uint8 = np.clip(output_rgb * 255.0, 0, 255).astype(np.uint8)
-            writer.write(cv2.cvtColor(output_uint8, cv2.COLOR_RGB2BGR))
+            writer.write(output_rgb)
 
             previous_left_mask = left_mask
             previous_right_mask = right_mask
@@ -202,7 +240,12 @@ def main(
                 print(f"==> green-screened {frame_index} frames", flush=True)
     finally:
         video.release()
-        writer.release()
+        writer.close()
+
+    if write_metadata:
+        print("==> writing chroma-key metadata", flush=True)
+        green_metadata_color = np.clip(green_color * 255.0, 0, 255).astype(np.uint8)
+        write_mp4_metadata(output_video_path, green_metadata_color, metadata_items)
 
     print(f"==> saved green-screen video: {output_video_path}", flush=True)
 
@@ -260,12 +303,22 @@ def resize_depth(depth, height, width):
     )
 
 
+def load_convergence(depth_npz_path, fallback):
+    meta_path = os.path.splitext(depth_npz_path)[0] + "_meta.json"
+    if not os.path.isfile(meta_path):
+        return fallback
+
+    with open(meta_path) as meta_file:
+        metadata = json.load(meta_file)
+    return float(metadata.get("convergence", fallback))
+
+
 def project_mask_to_right_eye(
-    left_mask, depth_frame, max_disp, max_disp_reference_width
+    left_mask, depth_frame, max_disp, max_disp_reference_width, convergence
 ):
     height, width = left_mask.shape
     effective_max_disp = max_disp * width / max_disp_reference_width
-    disp_pixels = (depth_frame * 2.0 - 1.0) * effective_max_disp
+    disp_pixels = (depth_frame - convergence) * 2.0 * effective_max_disp
 
     xs = np.arange(width, dtype=np.float32)
     ys = np.arange(height, dtype=np.float32)
@@ -536,5 +589,86 @@ def split_sbs_frame(frame_rgb):
     return frame_rgb[:, :half_width], frame_rgb[:, half_width:]
 
 
+def get_hex_color(green_color):
+    return "#{:02X}{:02X}{:02X}".format(
+        int(green_color[0]), int(green_color[1]), int(green_color[2])
+    )
+
+
+def parse_metadata_items(metadata_items):
+    if not metadata_items:
+        return []
+
+    items = []
+    for metadata_item in metadata_items.split(","):
+        metadata_item = metadata_item.strip()
+        if not metadata_item:
+            continue
+        if "=" not in metadata_item:
+            raise ValueError(
+                f"Expected metadata item as key=value, got: {metadata_item}"
+            )
+        key, value = metadata_item.split("=", 1)
+        items.append((key.strip(), value.strip()))
+    return items
+
+
+def get_chroma_key_metadata(green_color, metadata_items):
+    hex_color = get_hex_color(green_color)
+    metadata = [
+        ("stereo_mode", "left_right"),
+        ("chroma_key", "true"),
+        ("chroma_key_color", hex_color),
+        ("greenscreen", "true"),
+        ("greenscreen_color", hex_color),
+        ("passthrough_chroma_key", hex_color),
+        ("com.oculus.vr.chroma_key", hex_color),
+        ("com.meta.vr.chroma_key", hex_color),
+        ("com.deovr.chroma_key", hex_color),
+    ]
+    metadata.extend(parse_metadata_items(metadata_items))
+    return metadata
+
+
+def write_mp4_metadata(video_path, green_color, metadata_items):
+    metadata = get_chroma_key_metadata(green_color, metadata_items)
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    directory = os.path.dirname(video_path) or "."
+    file_name = os.path.basename(video_path)
+
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{os.path.splitext(file_name)[0]}_metadata_",
+        suffix=".mp4",
+        dir=directory,
+        delete=False,
+    ) as temp_file:
+        temp_output_path = temp_file.name
+
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        video_path,
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-movflags",
+        "use_metadata_tags",
+    ]
+
+    for key, value in metadata:
+        command.extend(["-metadata", f"{key}={value}"])
+
+    command.append(temp_output_path)
+
+    try:
+        run_command(command)
+        os.replace(temp_output_path, video_path)
+    finally:
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+
+
 if __name__ == "__main__":
-    Fire(monitor_step("Step 3 - Greenscreen")(main))
+    Fire(monitor_step("Step 5 - Greenscreen")(main))

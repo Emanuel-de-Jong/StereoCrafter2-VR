@@ -1,0 +1,11 @@
+{
+    "formatFiles.excludedFolders": [
+        ".git",
+        ".vscode",
+        "dependency",
+        "examples",
+        "weights",
+        "License-Code.txt",
+        "prompt.txt"
+    ]
+}

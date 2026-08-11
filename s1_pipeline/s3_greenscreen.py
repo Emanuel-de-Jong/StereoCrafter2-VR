@@ -1,5 +1,7 @@
 import os
 import shutil
+import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -7,24 +9,16 @@ import torch
 from fire import Fire
 from PIL import Image
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-def parse_bool(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in ["1", "true", "yes", "on"]
-    return bool(value)
-
-
-def parse_color(color):
-    values = [int(value.strip()) for value in color.split(",")]
-    if len(values) != 3:
-        raise ValueError(f"Expected green color as R,G,B, got: {color}")
-    if any(value < 0 or value > 255 for value in values):
-        raise ValueError(f"Color values must be between 0 and 255, got: {color}")
-    return np.array(values, dtype=np.float32) / 255.0
+import s0_utils.global_params as g
+from s0_utils.helpers import (
+    get_video_properties,
+    parse_bool,
+    parse_color,
+    should_skip_output,
+)
+from s0_utils.monitor import monitor_step
 
 
 def parse_classes(foreground_classes):
@@ -52,19 +46,6 @@ def resize_depth(depth, height, width):
     return cv2.resize(depth, (width, height), interpolation=cv2.INTER_LINEAR).astype(
         np.float32
     )
-
-
-def get_video_properties(video):
-    fps = video.get(cv2.CAP_PROP_FPS)
-    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    if fps <= 0:
-        raise ValueError("Could not read video FPS")
-    if width <= 0 or height <= 0:
-        raise ValueError("Could not read video size")
-
-    return fps, width, height
 
 
 def create_segmenter(model_path, device):
@@ -286,10 +267,10 @@ def split_sbs_frame(frame_rgb):
 
 
 def main(
-    input_video_path="outputs/vid_2_sbs.mp4",
-    output_video_path="outputs/vid_3_greenscreen.mp4",
-    depth_npz_path="outputs/vid_1_splatting.npz",
-    enabled=False,
+    input_video_path=str(g.OUTPUTS_DIR / "vid_2_sbs.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
+    enabled=g.GREENSCREEN_ENABLED,
     model_path="facebook/detr-resnet-50-panoptic",
     foreground_classes="person",
     selection_mode="main_subject",
@@ -311,8 +292,7 @@ def main(
     enabled = parse_bool(enabled)
     overwrite = parse_bool(overwrite)
 
-    if os.path.exists(output_video_path) and not overwrite:
-        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+    if should_skip_output(output_video_path, overwrite):
         return
 
     if not os.path.isfile(input_video_path):
@@ -436,4 +416,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 3 - Greenscreen")(main))

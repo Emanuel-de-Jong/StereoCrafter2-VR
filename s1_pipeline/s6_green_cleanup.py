@@ -1,44 +1,25 @@
 import os
 import shutil
-import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
 import cv2
 import imageio_ffmpeg
 import numpy as np
 from fire import Fire
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-def parse_bool(value):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in ["1", "true", "yes", "on"]
-    return bool(value)
-
-
-def parse_color(color):
-    values = [int(value.strip()) for value in color.split(",")]
-    if len(values) != 3:
-        raise ValueError(f"Expected green color as R,G,B, got: {color}")
-    if any(value < 0 or value > 255 for value in values):
-        raise ValueError(f"Color values must be between 0 and 255, got: {color}")
-    return np.array(values, dtype=np.uint8)
-
-
-def get_video_properties(video):
-    fps = video.get(cv2.CAP_PROP_FPS)
-    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    if fps <= 0:
-        raise ValueError("Could not read video FPS")
-    if width <= 0 or height <= 0:
-        raise ValueError("Could not read video size")
-
-    return fps, width, height
+import s0_utils.global_params as g
+from s0_utils.helpers import (
+    get_video_properties,
+    parse_bool,
+    parse_color,
+    run_command,
+    should_skip_output,
+)
+from s0_utils.monitor import monitor_step
 
 
 def get_green_cleanup_mask(frame_rgb, green_color, rgb_tolerance, green_dominance):
@@ -130,7 +111,7 @@ def write_mp4_metadata(video_path, green_color, metadata_items):
     command.append(temp_output_path)
 
     try:
-        subprocess.run(command, check=True)
+        run_command(command)
         os.replace(temp_output_path, video_path)
     finally:
         if os.path.exists(temp_output_path):
@@ -138,9 +119,9 @@ def write_mp4_metadata(video_path, green_color, metadata_items):
 
 
 def main(
-    input_video_path="outputs/vid_5_upscale.mp4",
-    output_video_path="outputs/vid_6_greenscreen.mp4",
-    enabled=True,
+    input_video_path=str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_6_result.mp4"),
+    enabled=g.GREEN_CLEANUP_ENABLED,
     green="0,255,0",
     rgb_tolerance=48.0,
     green_dominance=32.0,
@@ -152,8 +133,7 @@ def main(
     write_metadata = parse_bool(write_metadata)
     overwrite = parse_bool(overwrite)
 
-    if os.path.exists(output_video_path) and not overwrite:
-        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+    if should_skip_output(output_video_path, overwrite):
         return
 
     if not os.path.isfile(input_video_path):
@@ -166,7 +146,7 @@ def main(
         shutil.copy2(input_video_path, output_video_path)
         return
 
-    green_color = parse_color(green)
+    green_color = parse_color(green, dtype=np.uint8, normalize=False)
     video = cv2.VideoCapture(input_video_path)
     if not video.isOpened():
         raise ValueError(f"Could not open video: {input_video_path}")
@@ -207,4 +187,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 6 - Green Cleanup")(main))

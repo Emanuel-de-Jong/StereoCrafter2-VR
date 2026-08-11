@@ -1,21 +1,24 @@
-fire==0.7.1
 accelerate==1.13.0
-safetensors==0.8.0
-transformers==5.9.0
-pillow==12.2.0
+av==17.0.1
 decord==0.6.0
 diffusers==0.38.0
-peft==0.19.1
-xformers
-av==17.0.1
-matplotlib==3.10.9
-mediapy==1.2.6
-opencv-python==4.13.0.92
-ninja==1.13.0
+fire==0.7.1
 ftfy==6.3.1
 imageio-ffmpeg==0.6.0
+matplotlib==3.10.9
+mediapy==1.2.6
+ninja==1.13.0
+opencv-python==4.13.0.92
+peft==0.19.1
+pillow==12.2.0
+safetensors==0.8.0
+transformers==5.9.0
+xformers
 
 torchao==0.15
 
-timm==1.0.28
 imageio==2.37.4
+timm==1.0.28
+
+nvidia-ml-py==13.610.43
+psutil==7.2.2

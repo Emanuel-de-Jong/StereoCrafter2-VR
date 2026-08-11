@@ -41,7 +41,7 @@ cd StereoCrafter2-VR
 #### 3. Install the requirements
 
 ```bash
-conda create -n stereocrafter2 python=3.13 -y
+conda env create -f environment.yaml
 conda activate stereocrafter2
 pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
@@ -137,7 +137,7 @@ There are six main steps in these scripts for generating stereo video.
 Execute the following command:
 
 ```bash
-python s1_depth_splatting_inference.py --pre_trained_path [PATH] --unet_path [PATH]
+python s1_pipeline/s1_depth_splatting.py --pre_trained_path [PATH] --unet_path [PATH]
                                     --input_video_path [PATH] --output_video_path [PATH]
 ```
 
@@ -147,7 +147,7 @@ Arguments:
 - `--unet_path`: Path to the DepthCrafter model weights (e.g., `./weights/DepthCrafter`).
 - `--input_video_path`: Path to the input video (e.g., `./input/vid.mp4`).
 - `--output_video_path`: Path to the output video (e.g., `./outputs/vid_1_splatting.mp4`).
-- `--max_disp`: Parameter controlling the maximum disparity between the generated right video and the input left video. Default value is `20` pixels.
+- `--max_disp`: Parameter controlling the maximum disparity between the generated right video and the input left video. Default value is `26` pixels.
 
 The first step generates a video grid with input video, visualized depth map, occlusion mask, and splatting right video, as shown below:
 
@@ -156,7 +156,7 @@ The first step generates a video grid with input video, visualized depth map, oc
 Execute the following command:
 
 ```bash
-python s2_inpainting_inference.py --pre_trained_path [PATH] --transformer_path [PATH]
+python s1_pipeline/s2_inpainting.py --pre_trained_path [PATH] --transformer_path [PATH]
                                --input_video_path [PATH] --save_dir [PATH]
 ```
 
@@ -178,10 +178,10 @@ The shell scripts enable green-screen replacement by default after stereo inpain
 ./run_inference.sh ./inputs/vid.mp4
 ```
 
-The Python stage itself is off by default unless `--enabled True` is passed:
+The Python stage can be disabled with `--enabled False`:
 
 ```bash
-python s3_greenscreen.py --input_video_path ./outputs/vid_2_sbs.mp4 \
+python s1_pipeline/s3_greenscreen.py --input_video_path ./outputs/vid_2_sbs.mp4 \
                          --output_video_path ./outputs/vid_3_greenscreen.mp4 \
                          --depth_npz_path ./outputs/vid_1_splatting.npz \
                          --enabled True
@@ -190,18 +190,35 @@ python s3_greenscreen.py --input_video_path ./outputs/vid_2_sbs.mp4 \
 This stage uses video streaming, processes side-by-side stereo frames, replaces non-foreground pixels with green, and applies temporal mask smoothing plus edge feathering.
 The default selection mode is `main_subject`, which scores segmented objects using segment size, centrality, confidence, and the reused DepthCrafter depth map. It keeps the strongest main subject/object and additional clear main-focus subjects. Use `--selection_mode classes` with `--foreground_classes` when you want an explicit class filter instead.
 
+#### 4. Frame Interpolation
+
+```bash
+python s1_pipeline/s4_interpolation.py --input_video_path ./outputs/vid_3_greenscreen.mp4 \
+                                  --output_video_path ./outputs/vid_4_interp.mp4 \
+                                  --target_fps 45
+```
+
+#### 5. Upscale
+
+```bash
+python s1_pipeline/s5_upscale.py --input_video_path ./outputs/vid_4_interp.mp4 \
+                             --output_video_path ./outputs/vid_5_upscale.mp4
+```
+
 #### 6. Final Green Cleanup
 
 Frame interpolation, neural upscaling, and video encoding can shift pure green pixels away from the exact target color. The shell pipeline therefore runs a final cleanup pass after upscale:
 
 ```bash
-python s6_green_cleanup.py --input_video_path ./outputs/vid_5_upscale.mp4 \
-                           --output_video_path ./outputs/vid_6_greenscreen.mp4 \
+python s1_pipeline/s6_green_cleanup.py --input_video_path ./outputs/vid_5_upscale.mp4 \
+                           --output_video_path ./outputs/vid_6_result.mp4 \
                            --enabled True
 ```
 
 This pass snaps pixels that are close to the chosen green and clearly green-dominant back to exact `0,255,0`. It is intended to stabilize the final chroma-key background after interpolation and upscaling.
 It also writes best-effort MP4 metadata tags for VR/video players that inspect chroma-key metadata. There is no universal cross-player MP4 standard for passthrough chroma key metadata, so custom tags can be added with `--metadata_items key=value,other_key=value`.
+
+Each step prints its duration and average/max resource usage. `run_inference.sh` also prints the full convert duration.
 
 ## 🤝 Acknowledgements
 

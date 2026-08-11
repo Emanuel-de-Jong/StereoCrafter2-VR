@@ -1,9 +1,18 @@
 import os
+import sys
 import math
 import gc
+from pathlib import Path
 import torch
 import torch.nn.functional as F
 import numpy as np
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+import s0_utils.global_params as g
+from s0_utils.helpers import cleanup_cuda, should_skip_output
+from s0_utils.monitor import monitor_step
+
 from diffusers.utils import export_to_video
 from PIL import Image
 from decord import VideoReader, cpu
@@ -20,12 +29,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.bfloat16
 PROMPT = ""
 FP8_STATE_FILE = "diffusion_pytorch_model_fp8.pt"
-
-
-def cleanup_cuda():
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 def get_torch_dtype(dtype):
@@ -913,19 +916,19 @@ def extract_video_context(video_chunks, start_frame, end_frame):
 
 
 def main(
-    pre_trained_path,
-    transformer_path,
-    input_video_path,
-    save_dir,
-    frames_chunk=81,
-    frames_overlap=10,
+    pre_trained_path=str(g.WAN_WEIGHTS_PATH),
+    transformer_path=str(g.STEREOCRAFTER_WEIGHTS_PATH),
+    input_video_path=str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    save_dir=str(g.OUTPUTS_DIR),
+    frames_chunk=g.INPAINT_FRAMES_CHUNK,
+    frames_overlap=g.INPAINT_FRAMES_OVERLAP,
     tile_overlap=128,
-    tile_num=1,
-    inference_steps=10,
-    inpaint_scale=1.0,
-    transformer_dtype="auto",
-    transformer_cpu_offload="none",
-    vae_cpu_offload="none",
+    tile_num=g.INPAINT_TILE_NUM,
+    inference_steps=g.INPAINT_INFERENCE_STEPS,
+    inpaint_scale=g.INPAINT_SCALE,
+    transformer_dtype=g.INPAINT_TRANSFORMER_DTYPE,
+    transformer_cpu_offload=g.INPAINT_TRANSFORMER_CPU_OFFLOAD,
+    vae_cpu_offload=g.INPAINT_VAE_CPU_OFFLOAD,
     seed=0,
     overwrite=False,
 ):
@@ -942,8 +945,7 @@ def main(
     )
     frames_sbs_path = os.path.join(save_dir, f"{video_name}_2_sbs.mp4")
 
-    if os.path.exists(frames_sbs_path) and not overwrite:
-        print(f"==> output already exists, skipping: {frames_sbs_path}", flush=True)
+    if should_skip_output(frames_sbs_path, overwrite):
         return
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
@@ -1177,4 +1179,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 2 - Inpainting")(main))

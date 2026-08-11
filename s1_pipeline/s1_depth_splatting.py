@@ -1,14 +1,22 @@
 import gc
 import cv2
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 from diffusers.training_utils import set_seed
 from fire import Fire
 from decord import VideoReader, cpu
+
+import s0_utils.global_params as g
+from s0_utils.helpers import cleanup_cuda, should_skip_output
+from s0_utils.monitor import monitor_step
 
 from dependency.DepthCrafter.depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
 from dependency.DepthCrafter.depthcrafter.unet import (
@@ -36,8 +44,7 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
             height = round(original_height * scale / 64) * 64
             width = round(original_width * scale / 64) * 64
     else:
-        height = dataset_res_dict[dataset][0]
-        width = dataset_res_dict[dataset][1]
+        raise ValueError(f"Unknown dataset: {dataset}")
 
     vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
 
@@ -336,29 +343,28 @@ def DepthSplatting(
 
 
 def main(
-    input_video_path: str,
-    output_video_path: str,
-    unet_path: str,
-    pre_trained_path: str,
-    max_disp: float = 20.0,
+    input_video_path: str = str(g.INPUTS_DIR / "vid.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    unet_path: str = str(g.DEPTHCRAFTER_WEIGHTS_PATH),
+    pre_trained_path: str = str(g.SVD_WEIGHTS_PATH),
+    max_disp: float = g.DEPTH_MAX_DISP,
     process_length: int = -1,
     batch_size: int = 10,
-    cpu_offload: str = "model",
+    cpu_offload: str = g.DEPTH_CPU_OFFLOAD,
     num_denoising_steps: int = 8,
     guidance_scale: float = 1.2,
-    window_size: int = 70,
-    overlap: int = 25,
-    max_res: int = 1024,
+    window_size: int = g.DEPTH_WINDOW_SIZE,
+    overlap: int = g.DEPTH_OVERLAP,
+    max_res: int = g.DEPTH_MAX_RES,
     dataset: str = "open",
-    target_fps: int = -1,
+    target_fps: int = g.DEPTH_TARGET_FPS,
     seed: int = 42,
     track_time: bool = False,
     save_depth: bool = True,
-    decode_chunk_size: int = 8,
+    decode_chunk_size: int = g.DEPTH_DECODE_CHUNK_SIZE,
     overwrite: bool = False,
 ):
-    if os.path.exists(output_video_path) and not overwrite:
-        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+    if should_skip_output(output_video_path, overwrite):
         return
 
     depthcrafter_demo = DepthCrafterDemo(
@@ -386,8 +392,7 @@ def main(
 
     print("==> unloading DepthCrafter before splatting", flush=True)
     del depthcrafter_demo
-    torch.cuda.empty_cache()
-    gc.collect()
+    cleanup_cuda()
 
     print("==> running depth-based forward splatting", flush=True)
     DepthSplatting(
@@ -403,4 +408,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 1 - Depth Splatting")(main))

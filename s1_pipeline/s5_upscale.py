@@ -1,29 +1,15 @@
 import os
-import subprocess
+import sys
+from pathlib import Path
 
-import cv2
 import imageio_ffmpeg
 from fire import Fire
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-def get_video_size(input_video_path):
-    video = cv2.VideoCapture(input_video_path)
-    if not video.isOpened():
-        raise ValueError(f"Could not open video: {input_video_path}")
-
-    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    video.release()
-
-    if width <= 0 or height <= 0:
-        raise ValueError(f"Could not read video size: {input_video_path}")
-
-    return width, height
-
-
-def make_even(value):
-    value = int(round(value))
-    return value if value % 2 == 0 else value + 1
+import s0_utils.global_params as g
+from s0_utils.helpers import get_video_size, make_even, run_command, should_skip_output
+from s0_utils.monitor import monitor_step
 
 
 def get_target_size(width, height, target_width, target_height):
@@ -70,8 +56,8 @@ def run_video2x(
     if gpu is not None:
         command.extend(["-d", str(gpu)])
 
-    print("Running Video2X:", " ".join(command), flush=True)
-    subprocess.run(command, check=True)
+    print("Running Video2X", flush=True)
+    run_command(command)
 
 
 def resize_video(input_video_path, output_video_path, width, height):
@@ -92,22 +78,21 @@ def resize_video(input_video_path, output_video_path, width, height):
         output_video_path,
     ]
 
-    print("Running resize:", " ".join(command), flush=True)
-    subprocess.run(command, check=True)
+    print("Running resize", flush=True)
+    run_command(command)
 
 
 def main(
-    input_video_path="outputs/vid_2_sbs.mp4",
-    output_video_path="outputs/vid_3_upscale.mp4",
-    video2x_path="dependency/Video2X/Video2X-x86_64.AppImage",
-    target_width=5120,
-    target_height=2560,
+    input_video_path=str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    video2x_path=str(g.VIDEO2X_PATH),
+    target_width=g.UPSCALE_TARGET_WIDTH,
+    target_height=g.UPSCALE_TARGET_HEIGHT,
     realesrgan_model="realesr-animevideov3",
     gpu=0,
     overwrite=False,
 ):
-    if os.path.exists(output_video_path) and not overwrite:
-        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+    if should_skip_output(output_video_path, overwrite):
         return
 
     if not os.path.isfile(input_video_path):
@@ -187,4 +172,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 5 - Upscale")(main))

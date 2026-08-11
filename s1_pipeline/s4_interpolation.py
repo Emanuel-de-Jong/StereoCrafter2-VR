@@ -1,25 +1,17 @@
 import os
 import math
 import shutil
-import subprocess
+import sys
+from pathlib import Path
 
-import cv2
 import imageio_ffmpeg
 from fire import Fire
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-def get_video_fps(input_video_path):
-    video = cv2.VideoCapture(input_video_path)
-    if not video.isOpened():
-        raise ValueError(f"Could not open video: {input_video_path}")
-
-    fps = video.get(cv2.CAP_PROP_FPS)
-    video.release()
-
-    if fps <= 0:
-        raise ValueError(f"Could not read video FPS: {input_video_path}")
-
-    return fps
+import s0_utils.global_params as g
+from s0_utils.helpers import get_video_fps, run_command, should_skip_output
+from s0_utils.monitor import monitor_step
 
 
 def get_frame_rate_multiplier(input_fps, target_fps):
@@ -54,8 +46,8 @@ def run_rife_interpolation(
     if gpu is not None:
         command.extend(["-d", str(gpu)])
 
-    print("Running RIFE interpolation:", " ".join(command), flush=True)
-    subprocess.run(command, check=True)
+    print("Running RIFE interpolation", flush=True)
+    run_command(command)
 
 
 def conform_video_fps(input_video_path, output_video_path, target_fps, crf, preset):
@@ -80,15 +72,15 @@ def conform_video_fps(input_video_path, output_video_path, target_fps, crf, pres
         output_video_path,
     ]
 
-    print("Conforming FPS:", " ".join(command), flush=True)
-    subprocess.run(command, check=True)
+    print("Conforming FPS", flush=True)
+    run_command(command)
 
 
 def main(
-    input_video_path="outputs/vid_2_sbs.mp4",
-    output_video_path="outputs/vid_3_interp.mp4",
-    video2x_path="dependency/Video2X/Video2X-x86_64.AppImage",
-    target_fps=30,
+    input_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    video2x_path=str(g.VIDEO2X_PATH),
+    target_fps=g.INTERPOLATION_TARGET_FPS,
     rife_model="rife-v4.25",
     gpu=0,
     scene_thresh=100,
@@ -96,8 +88,7 @@ def main(
     preset="medium",
     overwrite=False,
 ):
-    if os.path.exists(output_video_path) and not overwrite:
-        print(f"==> output already exists, skipping: {output_video_path}", flush=True)
+    if should_skip_output(output_video_path, overwrite):
         return
 
     if not os.path.isfile(input_video_path):
@@ -157,4 +148,4 @@ def main(
 
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(monitor_step("Step 4 - Interpolation")(main))

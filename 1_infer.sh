@@ -32,7 +32,8 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--decode_chunk_size 8 \
 	--cpu_offload model \
 	--depth_blur 2 \
-	--convergence 0.5
+	--convergence 0.5 \
+	--convergence_mode manual
 
 printf "\n\n=== STEP 2: STEREO INPAINTING ===\n"
 python -u s1_pipeline/s2_inpainting.py \

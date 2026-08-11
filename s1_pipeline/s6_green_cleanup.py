@@ -20,6 +20,77 @@ from s0_utils.helpers import (
 from s0_utils.monitor import monitor_step
 
 
+def main(
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_6_result.mp4"),
+    enabled: bool = True,
+    green: str = "0,255,0",
+    rgb_tolerance: float = 48.0,
+    green_dominance: float = 32.0,
+    write_metadata: bool = True,
+    metadata_items: str = "",
+    overwrite: bool = False,
+):
+    enabled = parse_bool(enabled)
+    write_metadata = parse_bool(write_metadata)
+    overwrite = parse_bool(overwrite)
+
+    if should_skip_output(output_video_path, overwrite):
+        return
+
+    if not os.path.isfile(input_video_path):
+        raise FileNotFoundError(f"Input video not found: {input_video_path}")
+
+    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
+
+    if not enabled:
+        print("==> green cleanup disabled, copying input video", flush=True)
+        shutil.copy2(input_video_path, output_video_path)
+        return
+
+    green_color = parse_color(green, dtype=np.uint8, normalize=False)
+    video = cv2.VideoCapture(input_video_path)
+    if not video.isOpened():
+        raise ValueError(f"Could not open video: {input_video_path}")
+
+    fps, width, height = get_video_properties(video)
+    writer = cv2.VideoWriter(
+        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    )
+
+    frame_index = 0
+
+    try:
+        while True:
+            success, frame_bgr = video.read()
+            if not success:
+                break
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            cleanup_mask = get_green_cleanup_mask(
+                frame_rgb,
+                green_color,
+                rgb_tolerance,
+                green_dominance,
+            )
+            frame_rgb[cleanup_mask] = green_color
+
+            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+
+            frame_index += 1
+            if frame_index % 100 == 0:
+                print(f"==> cleaned {frame_index} frames", flush=True)
+    finally:
+        video.release()
+        writer.release()
+
+    if write_metadata:
+        print("==> writing chroma-key metadata", flush=True)
+        write_mp4_metadata(output_video_path, green_color, metadata_items)
+
+    print(f"==> saved green-cleaned video: {output_video_path}", flush=True)
+
+
 def parse_color(color, dtype=np.float32, normalize=True):
     values = [int(value.strip()) for value in color.split(",")]
     if len(values) != 3:
@@ -140,77 +211,6 @@ def write_mp4_metadata(video_path, green_color, metadata_items):
     finally:
         if os.path.exists(temp_output_path):
             os.remove(temp_output_path)
-
-
-def main(
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_6_result.mp4"),
-    enabled: bool = True,
-    green: str = "0,255,0",
-    rgb_tolerance: float = 48.0,
-    green_dominance: float = 32.0,
-    write_metadata: bool = True,
-    metadata_items: str = "",
-    overwrite: bool = False,
-):
-    enabled = parse_bool(enabled)
-    write_metadata = parse_bool(write_metadata)
-    overwrite = parse_bool(overwrite)
-
-    if should_skip_output(output_video_path, overwrite):
-        return
-
-    if not os.path.isfile(input_video_path):
-        raise FileNotFoundError(f"Input video not found: {input_video_path}")
-
-    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
-
-    if not enabled:
-        print("==> green cleanup disabled, copying input video", flush=True)
-        shutil.copy2(input_video_path, output_video_path)
-        return
-
-    green_color = parse_color(green, dtype=np.uint8, normalize=False)
-    video = cv2.VideoCapture(input_video_path)
-    if not video.isOpened():
-        raise ValueError(f"Could not open video: {input_video_path}")
-
-    fps, width, height = get_video_properties(video)
-    writer = cv2.VideoWriter(
-        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-    )
-
-    frame_index = 0
-
-    try:
-        while True:
-            success, frame_bgr = video.read()
-            if not success:
-                break
-
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            cleanup_mask = get_green_cleanup_mask(
-                frame_rgb,
-                green_color,
-                rgb_tolerance,
-                green_dominance,
-            )
-            frame_rgb[cleanup_mask] = green_color
-
-            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
-
-            frame_index += 1
-            if frame_index % 100 == 0:
-                print(f"==> cleaned {frame_index} frames", flush=True)
-    finally:
-        video.release()
-        writer.release()
-
-    if write_metadata:
-        print("==> writing chroma-key metadata", flush=True)
-        write_mp4_metadata(output_video_path, green_color, metadata_items)
-
-    print(f"==> saved green-cleaned video: {output_video_path}", flush=True)
 
 
 if __name__ == "__main__":

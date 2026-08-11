@@ -29,6 +29,71 @@ from dependencies.DepthCrafter.depthcrafter.utils import vis_sequence_depth
 from Forward_Warp import forward_warp
 
 
+def main(
+    input_video_path: str = str(g.INPUTS_DIR / "vid.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    unet_path: str = str(g.DEPTHCRAFTER_WEIGHTS_PATH),
+    pre_trained_path: str = str(g.SVD_WEIGHTS_PATH),
+    max_disp: float = 26,
+    process_length: int = -1,
+    batch_size: int = 10,
+    cpu_offload: str = "model",
+    num_denoising_steps: int = 8,
+    guidance_scale: float = 1.2,
+    window_size: int = 49,
+    overlap: int = 10,
+    max_res: int = 768,
+    dataset: str = "open",
+    target_fps: int = 15,
+    seed: int = 42,
+    track_time: bool = False,
+    save_depth: bool = True,
+    decode_chunk_size: int = 4,
+    overwrite: bool = False,
+):
+    if should_skip_output(output_video_path, overwrite):
+        return
+
+    depthcrafter_demo = DepthCrafterDemo(
+        unet_path=unet_path,
+        pre_trained_path=pre_trained_path,
+        cpu_offload=cpu_offload,
+    )
+
+    video_depth, depth_vis = depthcrafter_demo.infer(
+        input_video_path=input_video_path,
+        output_video_path=output_video_path,
+        process_length=process_length,
+        num_denoising_steps=num_denoising_steps,
+        guidance_scale=guidance_scale,
+        window_size=window_size,
+        overlap=overlap,
+        max_res=max_res,
+        dataset=dataset,
+        target_fps=target_fps,
+        seed=seed,
+        track_time=track_time,
+        save_depth=save_depth,
+        decode_chunk_size=decode_chunk_size,
+    )
+
+    print("==> unloading DepthCrafter before splatting", flush=True)
+    del depthcrafter_demo
+    cleanup_cuda()
+
+    print("==> running depth-based forward splatting", flush=True)
+    DepthSplatting(
+        input_video_path,
+        output_video_path,
+        video_depth,
+        depth_vis,
+        max_disp,
+        process_length,
+        batch_size,
+        target_fps,
+    )
+
+
 def read_video_frames(video_path, process_length, target_fps, max_res, dataset="open"):
     if dataset == "open":
         print("==> processing video: ", video_path, flush=True)
@@ -214,12 +279,6 @@ class ForwardWarpStereo(nn.Module):
         self.fw = forward_warp()
 
     def forward(self, im, disp):
-        """
-        :param im: BCHW
-        :param disp: B1HW
-        :return: BCHW
-        detach will lead to unconverge!!
-        """
         im = im.contiguous()
         disp = disp.contiguous()
         weights_map = disp - disp.min()
@@ -251,16 +310,6 @@ def DepthSplatting(
     batch_size,
     target_fps,
 ):
-    """
-    Depth-Based Video Splatting Using the Video Depth.
-    Args:
-        input_video_path: Path to the input video.
-        output_video_path: Path to the output video.
-        video_depth: Video depth with shape of [T, H, W] in [0, 1].
-        depth_vis: Visualized video depth with shape of [T, H, W, 3] in [0, 1].
-        process_length: The length of video to process.
-        batch_size: The batch size for splatting to save GPU memory.
-    """
     print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
@@ -326,84 +375,6 @@ def DepthSplatting(
         gc.collect()
 
     out.release()
-
-
-def get_depth_artifact_paths(output_video_path):
-    save_path = os.path.join(
-        os.path.dirname(output_video_path),
-        os.path.splitext(os.path.basename(output_video_path))[0],
-    )
-    return {
-        "depth_npz": save_path + ".npz",
-        "depth_visualization_video": save_path + "_depth_vis.mp4",
-    }
-
-
-def main(
-    input_video_path: str = str(g.INPUTS_DIR / "vid.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
-    unet_path: str = str(g.DEPTHCRAFTER_WEIGHTS_PATH),
-    pre_trained_path: str = str(g.SVD_WEIGHTS_PATH),
-    max_disp: float = 26,
-    process_length: int = -1,
-    batch_size: int = 10,
-    cpu_offload: str = "model",
-    num_denoising_steps: int = 8,
-    guidance_scale: float = 1.2,
-    window_size: int = 49,
-    overlap: int = 10,
-    max_res: int = 768,
-    dataset: str = "open",
-    target_fps: int = 15,
-    seed: int = 42,
-    track_time: bool = False,
-    save_depth: bool = True,
-    decode_chunk_size: int = 4,
-    overwrite: bool = False,
-):
-    extra_paths = get_depth_artifact_paths(output_video_path)
-
-    if should_skip_output(output_video_path, overwrite):
-        return
-
-    depthcrafter_demo = DepthCrafterDemo(
-        unet_path=unet_path,
-        pre_trained_path=pre_trained_path,
-        cpu_offload=cpu_offload,
-    )
-
-    video_depth, depth_vis = depthcrafter_demo.infer(
-        input_video_path=input_video_path,
-        output_video_path=output_video_path,
-        process_length=process_length,
-        num_denoising_steps=num_denoising_steps,
-        guidance_scale=guidance_scale,
-        window_size=window_size,
-        overlap=overlap,
-        max_res=max_res,
-        dataset=dataset,
-        target_fps=target_fps,
-        seed=seed,
-        track_time=track_time,
-        save_depth=save_depth,
-        decode_chunk_size=decode_chunk_size,
-    )
-
-    print("==> unloading DepthCrafter before splatting", flush=True)
-    del depthcrafter_demo
-    cleanup_cuda()
-
-    print("==> running depth-based forward splatting", flush=True)
-    DepthSplatting(
-        input_video_path,
-        output_video_path,
-        video_depth,
-        depth_vis,
-        max_disp,
-        process_length,
-        batch_size,
-        target_fps,
-    )
 
 
 if __name__ == "__main__":

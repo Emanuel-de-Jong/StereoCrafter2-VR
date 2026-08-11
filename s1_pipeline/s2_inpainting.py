@@ -31,846 +31,6 @@ PROMPT = ""
 FP8_STATE_FILE = "diffusion_pytorch_model_fp8.pt"
 
 
-def get_torch_dtype(dtype):
-    if dtype is None:
-        return None
-    dtype = dtype.lower()
-    if dtype in ["auto", "none", "fp8"]:
-        return None
-    if dtype in ["bfloat16", "bf16"]:
-        return torch.bfloat16
-    if dtype in ["float16", "fp16"]:
-        return torch.float16
-    if dtype in ["float32", "fp32"]:
-        return torch.float32
-    raise ValueError(f"Unknown torch dtype: {dtype}")
-
-
-def enable_vae_memory_features(vae):
-    if hasattr(vae, "enable_slicing"):
-        vae.enable_slicing()
-    if hasattr(vae, "enable_tiling"):
-        vae.enable_tiling()
-
-
-def load_fp8_transformer(transformer_path):
-    import torchao
-    from accelerate import init_empty_weights
-
-    config = WanVACETransformer3DModel.load_config(transformer_path)
-    with init_empty_weights():
-        transformer = WanVACETransformer3DModel.from_config(config)
-    state_dict = torch.load(
-        os.path.join(transformer_path, FP8_STATE_FILE),
-        map_location="cpu",
-        weights_only=False,
-    )
-    transformer.load_state_dict(state_dict, assign=True)
-    return transformer
-
-
-def load_transformer(
-    transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"
-):
-    transformer_dtype_name = (
-        transformer_dtype.lower()
-        if isinstance(transformer_dtype, str)
-        else transformer_dtype
-    )
-    transformer_dtype = get_torch_dtype(transformer_dtype)
-    load_kwargs = {"low_cpu_mem_usage": True}
-    if transformer_dtype is not None:
-        load_kwargs["torch_dtype"] = transformer_dtype
-
-    fp8_state_path = os.path.join(transformer_path, FP8_STATE_FILE)
-
-    if transformer_dtype_name == "fp8" and not os.path.isfile(fp8_state_path):
-        raise FileNotFoundError(
-            f"FP8 transformer state file not found: {fp8_state_path}"
-        )
-
-    if transformer_dtype_name in ["auto", "fp8"] and os.path.isfile(fp8_state_path):
-        transformer = load_fp8_transformer(transformer_path)
-    else:
-        transformer = WanVACETransformer3DModel.from_pretrained(
-            transformer_path, **load_kwargs
-        )
-
-    if isinstance(transformer_cpu_offload, str):
-        transformer_cpu_offload = transformer_cpu_offload.lower()
-
-    if transformer_cpu_offload in [None, "none", "cuda", "false"]:
-        transformer = transformer.to(DEVICE)
-    elif transformer_cpu_offload == "group":
-        if not hasattr(transformer, "enable_group_offload"):
-            raise ValueError(
-                "Transformer group offload requires a Diffusers version with enable_group_offload support"
-            )
-        transformer.enable_group_offload(
-            onload_device=DEVICE,
-            offload_device=torch.device("cpu"),
-            offload_type="block_level",
-            num_blocks_per_group=1,
-        )
-    else:
-        raise ValueError(
-            f"Unknown transformer cpu offload option: {transformer_cpu_offload}"
-        )
-
-    return transformer
-
-
-class FlowMatchScheduler:
-
-    def __init__(
-        self,
-    ):
-        self.set_timesteps_fn = FlowMatchScheduler.set_timesteps_wan
-        self.num_train_timesteps = 1000
-
-    @staticmethod
-    def set_timesteps_wan(num_inference_steps=100, denoising_strength=1.0, shift=None):
-        sigma_min = 0.0
-        sigma_max = 1.0
-        shift = 5 if shift is None else shift
-        num_train_timesteps = 1000
-        sigma_start = sigma_min + (sigma_max - sigma_min) * denoising_strength
-        sigmas = torch.linspace(sigma_start, sigma_min, num_inference_steps + 1)[:-1]
-        sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
-        timesteps = sigmas * num_train_timesteps
-        return sigmas, timesteps
-
-    def set_timesteps(self, num_inference_steps=100, denoising_strength=1.0, **kwargs):
-        self.sigmas, self.timesteps = self.set_timesteps_fn(
-            num_inference_steps=num_inference_steps,
-            denoising_strength=denoising_strength,
-            **kwargs,
-        )
-
-    def step(self, model_output, timestep, sample, to_final=False, **kwargs):
-        if isinstance(timestep, torch.Tensor):
-            timestep = timestep.cpu()
-        timestep_id = torch.argmin((self.timesteps - timestep).abs())
-        sigma = self.sigmas[timestep_id]
-        if to_final or timestep_id + 1 >= len(self.timesteps):
-            sigma_ = 0
-        else:
-            sigma_ = self.sigmas[timestep_id + 1]
-        prev_sample = sample + model_output * (sigma_ - sigma)
-        return prev_sample
-
-
-def encode_vae_mode(vae, x):
-    dist = vae.encode(x).latent_dist
-    return dist.mode() if hasattr(dist, "mode") else dist.mean
-
-
-def basic_clean(text):
-    text = ftfy.fix_text(text)
-    text = html.unescape(html.unescape(text))
-    return text.strip()
-
-
-def whitespace_clean(text):
-    text = re.sub(r"\s+", " ", text)
-    text = text.strip()
-    return text
-
-
-def prompt_clean(text):
-    text = whitespace_clean(basic_clean(text))
-    return text
-
-
-def get_t5_prompt_embeds(
-    prompt=None,
-    num_videos_per_prompt=1,
-    max_sequence_length=226,
-    device=None,
-    dtype=None,
-    tokenizer=None,
-    text_encoder=None,
-):
-
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    prompt = [prompt_clean(u) for u in prompt]
-    batch_size = len(prompt)
-
-    text_inputs = tokenizer(
-        prompt,
-        padding="max_length",
-        max_length=max_sequence_length,
-        truncation=True,
-        add_special_tokens=True,
-        return_attention_mask=True,
-        return_tensors="pt",
-    )
-    text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
-    seq_lens = mask.gt(0).sum(dim=1).long()
-
-    prompt_embeds = text_encoder(
-        text_input_ids.to(device), mask.to(device)
-    ).last_hidden_state
-    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
-    prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
-    prompt_embeds = torch.stack(
-        [
-            torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))])
-            for u in prompt_embeds
-        ],
-        dim=0,
-    )
-
-    _, seq_len, _ = prompt_embeds.shape
-    prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
-    prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
-
-    return prompt_embeds
-
-
-def encode_prompt(
-    prompt,
-    negative_prompt=None,
-    do_classifier_free_guidance=True,
-    num_videos_per_prompt=1,
-    prompt_embeds=None,
-    negative_prompt_embeds=None,
-    max_sequence_length=226,
-    device=None,
-    dtype=None,
-    tokenizer=None,
-    text_encoder=None,
-):
-    r"""
-    Encodes the prompt into text encoder hidden states.
-
-    Args:
-        prompt (`str` or `List[str]`, *optional*):
-            prompt to be encoded
-        negative_prompt (`str` or `List[str]`, *optional*):
-            The prompt or prompts not to guide the image generation. If not defined, one has to pass
-            `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
-            less than `1`).
-        do_classifier_free_guidance (`bool`, *optional*, defaults to `True`):
-            Whether to use classifier free guidance or not.
-        num_videos_per_prompt (`int`, *optional*, defaults to 1):
-            Number of videos that should be generated per prompt. torch device to place the resulting embeddings on
-        prompt_embeds (`torch.Tensor`, *optional*):
-            Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
-            provided, text embeddings will be generated from `prompt` input argument.
-        negative_prompt_embeds (`torch.Tensor`, *optional*):
-            Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-            weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
-            argument.
-        device: (`torch.device`, *optional*):
-            torch device
-        dtype: (`torch.dtype`, *optional*):
-            torch dtype
-    """
-
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-    if prompt is not None:
-        batch_size = len(prompt)
-    else:
-        batch_size = prompt_embeds.shape[0]
-
-    if prompt_embeds is None:
-        prompt_embeds = get_t5_prompt_embeds(
-            prompt=prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=max_sequence_length,
-            device=device,
-            dtype=dtype,
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-        )
-
-    if do_classifier_free_guidance and negative_prompt_embeds is None:
-        negative_prompt = negative_prompt or ""
-        negative_prompt = (
-            batch_size * [negative_prompt]
-            if isinstance(negative_prompt, str)
-            else negative_prompt
-        )
-
-        if prompt is not None and type(prompt) is not type(negative_prompt):
-            raise TypeError(
-                f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                f" {type(prompt)}."
-            )
-        elif batch_size != len(negative_prompt):
-            raise ValueError(
-                f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                " the batch size of `prompt`."
-            )
-
-        negative_prompt_embeds = get_t5_prompt_embeds(
-            prompt=negative_prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
-            max_sequence_length=max_sequence_length,
-            device=device,
-            dtype=dtype,
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-        )
-
-    return prompt_embeds, negative_prompt_embeds
-
-
-def prepare_masks(
-    mask: torch.Tensor,
-    reference_images=None,
-    transformer_patch_size=None,
-    vae_scale_factor_temporal=None,
-    vae_scale_factor_spatial=None,
-) -> torch.Tensor:
-
-    if reference_images is None:
-        reference_images = [[None] for _ in range(mask.shape[0])]
-    else:
-        if mask.shape[0] != len(reference_images):
-            raise ValueError(
-                f"Batch size of `mask` {mask.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
-            )
-
-    mask_list = []
-    for mask_, reference_images_batch in zip(mask, reference_images):
-        num_channels, num_frames, height, width = mask_.shape
-        new_num_frames = (
-            num_frames + vae_scale_factor_temporal - 1
-        ) // vae_scale_factor_temporal
-        new_height = (
-            height
-            // (vae_scale_factor_spatial * transformer_patch_size)
-            * transformer_patch_size
-        )
-        new_width = (
-            width
-            // (vae_scale_factor_spatial * transformer_patch_size)
-            * transformer_patch_size
-        )
-        mask_ = mask_[0, :, :, :]
-        mask_ = mask_.view(
-            num_frames,
-            new_height,
-            vae_scale_factor_spatial,
-            new_width,
-            vae_scale_factor_spatial,
-        )
-        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(0, 1)
-        mask_ = torch.nn.functional.interpolate(
-            mask_.unsqueeze(0),
-            size=(new_num_frames, new_height, new_width),
-            mode="nearest-exact",
-        ).squeeze(0)
-        num_ref_images = len(reference_images_batch)
-        if num_ref_images > 0:
-            mask_padding = torch.zeros_like(mask_[:, :num_ref_images, :, :])
-            mask_ = torch.cat([mask_padding, mask_], dim=1)
-        mask_list.append(mask_)
-    return torch.stack(mask_list)
-
-
-def preprocess_conditions(
-    video=None,
-    mask=None,
-    reference_images=None,
-    batch_size: int = 1,
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    dtype=None,
-    device=None,
-    video_processor=None,
-    base=None,
-):
-    if video is not None:
-        video_height, video_width = video_processor.get_default_height_width(video[0])
-
-        if video_height * video_width > height * width:
-            scale = min(width / video_width, height / video_height)
-            video_height, video_width = int(video_height * scale), int(
-                video_width * scale
-            )
-
-        if video_height % base != 0 or video_width % base != 0:
-            video_height = (video_height // base) * base
-            video_width = (video_width // base) * base
-
-        assert video_height * video_width <= height * width
-
-        video = video_processor.preprocess_video(video, video_height, video_width)
-        image_size = (
-            video_height,
-            video_width,
-        )
-    else:
-        video = torch.zeros(
-            batch_size, 3, num_frames, height, width, dtype=dtype, device=device
-        )
-        image_size = (height, width)
-
-    if mask is not None:
-        mask = video_processor.preprocess_video(mask, image_size[0], image_size[1])
-        mask = torch.clamp((mask + 1) / 2, min=0, max=1)
-    else:
-        mask = torch.ones_like(video)
-
-    video = video.to(dtype=dtype, device=device)
-    mask = mask.to(dtype=dtype, device=device)
-
-    if reference_images is None or isinstance(reference_images, Image.Image):
-        reference_images = [[reference_images] for _ in range(video.shape[0])]
-    elif isinstance(reference_images, (list, tuple)) and isinstance(
-        next(iter(reference_images)), Image.Image
-    ):
-        reference_images = [reference_images]
-    elif (
-        isinstance(reference_images, (list, tuple))
-        and isinstance(next(iter(reference_images)), list)
-        and isinstance(next(iter(reference_images[0])), Image.Image)
-    ):
-        reference_images = reference_images
-    else:
-        raise ValueError(
-            "`reference_images` has to be of type `PIL.Image.Image` or `list` of `PIL.Image.Image`, or "
-            "`list` of `list` of `PIL.Image.Image`, but is {type(reference_images)}"
-        )
-
-    if video.shape[0] != len(reference_images):
-        raise ValueError(
-            f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
-        )
-
-    ref_images_lengths = [
-        len(reference_images_batch) for reference_images_batch in reference_images
-    ]
-    if any(l != ref_images_lengths[0] for l in ref_images_lengths):
-        raise ValueError(
-            f"All batches of `reference_images` should have the same length, but got {ref_images_lengths}. Support for this "
-            "may be added in the future."
-        )
-
-    reference_images_preprocessed = []
-    for i, reference_images_batch in enumerate(reference_images):
-        preprocessed_images = []
-        for j, image in enumerate(reference_images_batch):
-            if image is None:
-                continue
-            image = video_processor.preprocess(image, None, None)
-            img_height, img_width = image.shape[-2:]
-            scale = min(image_size[0] / img_height, image_size[1] / img_width)
-            new_height, new_width = int(img_height * scale), int(img_width * scale)
-            resized_image = torch.nn.functional.interpolate(
-                image,
-                size=(new_height, new_width),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)
-            top = (image_size[0] - new_height) // 2
-            left = (image_size[1] - new_width) // 2
-            canvas = torch.ones(3, *image_size, device=device, dtype=dtype)
-            canvas[:, top : top + new_height, left : left + new_width] = resized_image
-            preprocessed_images.append(canvas)
-        reference_images_preprocessed.append(preprocessed_images)
-
-    return video, mask, reference_images_preprocessed
-
-
-def prepare_video_latents(
-    video: torch.Tensor,
-    mask: torch.Tensor,
-    reference_images=None,
-    device=None,
-    vae=None,
-) -> torch.Tensor:
-
-    if reference_images is None:
-        reference_images = [[None] for _ in range(video.shape[0])]
-    else:
-        if video.shape[0] != len(reference_images):
-            raise ValueError(
-                f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
-            )
-
-    vae_dtype = vae.dtype
-    video = video.to(dtype=vae_dtype)
-
-    latents_mean = torch.tensor(
-        vae.config.latents_mean, device=device, dtype=torch.float32
-    ).view(1, vae.config.z_dim, 1, 1, 1)
-    latents_std = 1.0 / torch.tensor(
-        vae.config.latents_std, device=device, dtype=torch.float32
-    ).view(1, vae.config.z_dim, 1, 1, 1)
-
-    if mask is None:
-        latents = encode_vae_mode(vae, video)
-        latents = ((latents.float() - latents_mean) * latents_std).to(vae_dtype)
-    else:
-        mask = torch.where(mask > 0.5, 1.0, 0.0).to(dtype=vae_dtype)
-        inactive = video * (1 - mask)
-        reactive = video * mask
-        inactive = encode_vae_mode(vae, inactive)
-        reactive = encode_vae_mode(vae, reactive)
-        inactive = ((inactive.float() - latents_mean) * latents_std).to(vae_dtype)
-        reactive = ((reactive.float() - latents_mean) * latents_std).to(vae_dtype)
-        latents = torch.cat([inactive, reactive], dim=1)
-
-    latent_list = []
-    for latent, reference_images_batch in zip(latents, reference_images):
-        for reference_image in reference_images_batch:
-            assert reference_image.ndim == 3
-            reference_image = reference_image.to(dtype=vae_dtype)
-            reference_image = reference_image[None, :, None, :, :]
-            reference_latent = vae.encode(reference_image).latent_dist.sample()
-            reference_latent = (
-                (reference_latent.float() - latents_mean) * latents_std
-            ).to(vae_dtype)
-            reference_latent = reference_latent.squeeze(0)
-            reference_latent = torch.cat(
-                [reference_latent, torch.zeros_like(reference_latent)], dim=0
-            )
-            latent = torch.cat([reference_latent.squeeze(0), latent], dim=1)
-        latent_list.append(latent)
-
-    return torch.stack(latent_list)
-
-
-def blend_h(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
-    """水平方向融合 Latents，支持 [B, C, F, H, W]"""
-    weight_b = (torch.arange(overlap_size).view(1, 1, 1, 1, -1) / overlap_size).to(
-        b.device, dtype=b.dtype
-    )
-    b[:, :, :, :, :overlap_size] = (1 - weight_b) * a[
-        :, :, :, :, -overlap_size:
-    ] + weight_b * b[:, :, :, :, :overlap_size]
-    return b
-
-
-def blend_v(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
-    """垂直方向融合 Latents，支持 [B, C, F, H, W]"""
-    weight_b = (torch.arange(overlap_size).view(1, 1, 1, -1, 1) / overlap_size).to(
-        b.device, dtype=b.dtype
-    )
-    b[:, :, :, :overlap_size, :] = (1 - weight_b) * a[
-        :, :, :, -overlap_size:, :
-    ] + weight_b * b[:, :, :, :overlap_size, :]
-    return b
-
-
-def run_wan_pipeline(
-    cond_frames,
-    mask_frames,
-    prompt_embeds,
-    transformer,
-    vae,
-    noise_scheduler,
-    videoprocessor,
-    vae_scale_factor_spatial,
-    vae_scale_factor_temporal,
-    transformer_patch_size,
-    vae_cpu_offload="none",
-):
-    """封装单次 Wan 去噪 Pipeline 以供分块调用"""
-    height, width = cond_frames.shape[3], cond_frames.shape[4]
-    num_frames = cond_frames.shape[2]
-
-    if vae_cpu_offload == "manual":
-        vae.to(DEVICE)
-
-    with torch.inference_mode():
-        cond_frames_vp = cond_frames.permute(0, 2, 1, 3, 4)
-        mask_frames_vp = mask_frames.permute(0, 2, 1, 3, 4)
-
-        condition_video, mask, reference_images = preprocess_conditions(
-            video=cond_frames_vp,
-            mask=mask_frames_vp,
-            reference_images=None,
-            batch_size=1,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            dtype=DTYPE,
-            device=DEVICE,
-            video_processor=videoprocessor,
-            base=vae_scale_factor_spatial * transformer_patch_size,
-        )
-
-        conditioning_latents = prepare_video_latents(
-            condition_video, mask, reference_images, DEVICE, vae
-        )
-        mask_for_transformer = prepare_masks(
-            mask,
-            reference_images,
-            transformer_patch_size,
-            vae_scale_factor_temporal,
-            vae_scale_factor_spatial,
-        ).to(DEVICE, dtype=DTYPE)
-        control_hidden_states = torch.cat(
-            [conditioning_latents, mask_for_transformer], dim=1
-        ).to(DTYPE)
-
-    del (
-        condition_video,
-        mask,
-        reference_images,
-        conditioning_latents,
-        mask_for_transformer,
-    )
-
-    if vae_cpu_offload == "manual":
-        vae.to("cpu")
-        cleanup_cuda()
-
-    c = transformer.config.in_channels
-    f = (num_frames - 1) // vae_scale_factor_temporal + 1
-    h = height // vae_scale_factor_spatial
-    w = width // vae_scale_factor_spatial
-
-    latents = torch.randn(1, c, f, h, w, device=DEVICE, dtype=DTYPE)
-
-    for i, t in enumerate(noise_scheduler.timesteps):
-        timestep_tensor = t.unsqueeze(0).to(DEVICE, dtype=DTYPE)
-        with torch.no_grad():
-            model_pred = transformer(
-                hidden_states=latents,
-                timestep=timestep_tensor,
-                encoder_hidden_states=prompt_embeds,
-                control_hidden_states=control_hidden_states,
-                return_dict=False,
-            )[0]
-        latents = noise_scheduler.step(model_pred, t, latents)
-        del model_pred, timestep_tensor
-
-    del control_hidden_states
-
-    return latents
-
-
-def spatial_tiled_process(
-    cond_frames,
-    mask_frames,
-    tile_num,
-    tile_overlap,
-    prompt_embeds,
-    transformer,
-    vae,
-    noise_scheduler,
-    videoprocessor,
-    vae_scale_factor_spatial,
-    vae_scale_factor_temporal,
-    transformer_patch_size,
-    vae_cpu_offload="none",
-):
-    """处理单段视频的空间分块"""
-    if tile_num == 1:
-        return run_wan_pipeline(
-            cond_frames,
-            mask_frames,
-            prompt_embeds,
-            transformer,
-            vae,
-            noise_scheduler,
-            videoprocessor,
-            vae_scale_factor_spatial,
-            vae_scale_factor_temporal,
-            transformer_patch_size,
-            vae_cpu_offload,
-        )
-
-    height = cond_frames.shape[3]
-    width = cond_frames.shape[4]
-
-    base = vae_scale_factor_spatial * transformer_patch_size
-    tile_size = (
-        int((height + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
-        int((width + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
-    )
-    tile_stride = (tile_size[0] - tile_overlap, tile_size[1] - tile_overlap)
-
-    cols = []
-    for i in range(tile_num):
-        rows = []
-        for j in range(tile_num):
-            h_start = min(i * tile_stride[0], height - tile_size[0])
-            w_start = min(j * tile_stride[1], width - tile_size[1])
-
-            cond_tile = cond_frames[
-                :,
-                :,
-                :,
-                h_start : h_start + tile_size[0],
-                w_start : w_start + tile_size[1],
-            ]
-            mask_tile = mask_frames[
-                :,
-                :,
-                :,
-                h_start : h_start + tile_size[0],
-                w_start : w_start + tile_size[1],
-            ]
-
-            tile_latent = run_wan_pipeline(
-                cond_tile,
-                mask_tile,
-                prompt_embeds,
-                transformer,
-                vae,
-                noise_scheduler,
-                videoprocessor,
-                vae_scale_factor_spatial,
-                vae_scale_factor_temporal,
-                transformer_patch_size,
-                vae_cpu_offload,
-            )
-            rows.append(tile_latent)
-            del cond_tile, mask_tile
-            cleanup_cuda()
-        cols.append(rows)
-
-    latent_stride = (
-        tile_stride[0] // vae_scale_factor_spatial,
-        tile_stride[1] // vae_scale_factor_spatial,
-    )
-    latent_overlap = (
-        tile_overlap // vae_scale_factor_spatial,
-        tile_overlap // vae_scale_factor_spatial,
-    )
-
-    results_cols = []
-    for i, rows in enumerate(cols):
-        results_rows = []
-        for j, tile in enumerate(rows):
-            if i > 0:
-                tile = blend_v(cols[i - 1][j], tile, latent_overlap[0])
-            if j > 0:
-                tile = blend_h(rows[j - 1], tile, latent_overlap[1])
-            results_rows.append(tile)
-        results_cols.append(results_rows)
-
-    pixels = []
-    for i, rows in enumerate(results_cols):
-        for j, tile in enumerate(rows):
-            if i < len(results_cols) - 1:
-                tile = tile[:, :, :, : latent_stride[0], :]
-            if j < len(rows) - 1:
-                tile = tile[:, :, :, :, : latent_stride[1]]
-            rows[j] = tile
-        pixels.append(torch.cat(rows, dim=4))
-
-    return torch.cat(pixels, dim=3)
-
-
-def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
-    batch_size, channels, num_frames = video_tensor.shape[:3]
-    video_tensor = video_tensor.permute(0, 2, 1, 3, 4).reshape(
-        batch_size * num_frames, channels, video_tensor.shape[3], video_tensor.shape[4]
-    )
-
-    if mode in ["linear", "bilinear", "bicubic", "trilinear"]:
-        video_tensor = F.interpolate(
-            video_tensor, size=(height, width), mode=mode, align_corners=False
-        )
-    else:
-        video_tensor = F.interpolate(video_tensor, size=(height, width), mode=mode)
-
-    return video_tensor.reshape(
-        batch_size, num_frames, channels, height, width
-    ).permute(0, 2, 1, 3, 4)
-
-
-def load_video_chunk(video_reader, start_frame, end_frame, inpaint_scale, base):
-    frame_indices = list(range(start_frame, end_frame))
-    frames = video_reader.get_batch(frame_indices)
-    frames = (
-        torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
-        / 255.0
-    )
-
-    height, width = frames.shape[3] // 2, frames.shape[4] // 2
-    frames_left = frames[:, :, :, :height, :width].clone()
-    all_masks = frames[:, :, :, height:, :width].clone()
-    all_frames = frames[:, :, :, height:, width:].clone()
-    del frames
-
-    if inpaint_scale != 1.0:
-        scaled_height = max(base, int(height * inpaint_scale) // base * base)
-        scaled_width = max(base, int(width * inpaint_scale) // base * base)
-        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
-        all_masks = resize_video_tensor(
-            all_masks, scaled_height, scaled_width, mode="nearest"
-        )
-        all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
-
-    all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
-
-    return frames_left, all_masks, all_frames
-
-
-def get_tiling_padding(height, width, tile_num, tile_overlap, base):
-    min_tile_h = (height + tile_overlap * (tile_num - 1)) / tile_num
-    tile_size_h = math.ceil(min_tile_h / base) * base
-
-    min_tile_w = (width + tile_overlap * (tile_num - 1)) / tile_num
-    tile_size_w = math.ceil(min_tile_w / base) * base
-
-    tile_stride_h = tile_size_h - tile_overlap
-    tile_stride_w = tile_size_w - tile_overlap
-
-    target_h = tile_stride_h * (tile_num - 1) + tile_size_h
-    target_w = tile_stride_w * (tile_num - 1) + tile_size_w
-
-    return target_h - height, target_w - width
-
-
-def pad_video_chunk(all_frames, all_masks, pad_h, pad_w):
-    if pad_h <= 0 and pad_w <= 0:
-        return all_frames, all_masks
-
-    frames_4d = all_frames[0].permute(1, 0, 2, 3)
-    frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode="replicate")
-    all_frames = frames_4d.permute(1, 0, 2, 3).unsqueeze(0)
-    all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode="constant", value=0)
-
-    return all_frames, all_masks
-
-
-def extract_video_context(video_chunks, start_frame, end_frame):
-    context_chunks = []
-    chunk_start = 0
-    for video_chunk in video_chunks:
-        chunk_end = chunk_start + video_chunk.shape[2]
-        overlap_start = max(start_frame, chunk_start)
-        overlap_end = min(end_frame, chunk_end)
-        if overlap_start < overlap_end:
-            context_chunks.append(
-                video_chunk[
-                    :, :, overlap_start - chunk_start : overlap_end - chunk_start
-                ]
-            )
-        chunk_start = chunk_end
-
-    if not context_chunks:
-        return None
-
-    return torch.cat(context_chunks, dim=2)
-
-
-def get_inpainting_output_paths(
-    input_video_path, output_path, output_video_path=None, anaglyph_video_path=None
-):
-    video_name = (
-        input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
-    )
-    if output_video_path is None:
-        output_video_path = os.path.join(output_path, f"{video_name}_2_sbs.mp4")
-    if anaglyph_video_path is None:
-        anaglyph_video_path = os.path.join(output_path, f"{video_name}_2_anaglyph.mp4")
-
-    return output_video_path, anaglyph_video_path
-
-
 def main(
     pre_trained_path: str = str(g.WAN_WEIGHTS_PATH),
     transformer_path: str = str(g.STEREOCRAFTER_WEIGHTS_PATH),
@@ -882,7 +42,7 @@ def main(
     frames_overlap: int = 2,
     tile_overlap: int = 128,
     tile_num: int = 2,
-    inference_steps: int = 5,
+    inference_steps: int = 10,
     inpaint_scale: float = 0.5,
     transformer_dtype: str = "fp8",
     transformer_cpu_offload: str = "none",
@@ -893,7 +53,6 @@ def main(
     frames_sbs_path, vid_anaglyph_path = get_inpainting_output_paths(
         input_video_path, output_path, output_video_path, anaglyph_video_path
     )
-    extra_paths = {"anaglyph_video": vid_anaglyph_path}
 
     if seed is not None:
         random.seed(seed)
@@ -1117,6 +276,812 @@ def main(
     vid_anaglyph_frames_list = [vid_anaglyph[i] for i in range(vid_anaglyph.shape[0])]
 
     export_to_video(vid_anaglyph_frames_list, vid_anaglyph_path, fps=int(fps))
+
+
+def get_torch_dtype(dtype):
+    if dtype is None:
+        return None
+    dtype = dtype.lower()
+    if dtype in ["auto", "none", "fp8"]:
+        return None
+    if dtype in ["bfloat16", "bf16"]:
+        return torch.bfloat16
+    if dtype in ["float16", "fp16"]:
+        return torch.float16
+    if dtype in ["float32", "fp32"]:
+        return torch.float32
+    raise ValueError(f"Unknown torch dtype: {dtype}")
+
+
+def enable_vae_memory_features(vae):
+    if hasattr(vae, "enable_slicing"):
+        vae.enable_slicing()
+    if hasattr(vae, "enable_tiling"):
+        vae.enable_tiling()
+
+
+def load_fp8_transformer(transformer_path):
+    import torchao
+    from accelerate import init_empty_weights
+
+    config = WanVACETransformer3DModel.load_config(transformer_path)
+    with init_empty_weights():
+        transformer = WanVACETransformer3DModel.from_config(config)
+    state_dict = torch.load(
+        os.path.join(transformer_path, FP8_STATE_FILE),
+        map_location="cpu",
+        weights_only=False,
+    )
+    transformer.load_state_dict(state_dict, assign=True)
+    return transformer
+
+
+def load_transformer(
+    transformer_path, transformer_dtype="auto", transformer_cpu_offload="none"
+):
+    transformer_dtype_name = (
+        transformer_dtype.lower()
+        if isinstance(transformer_dtype, str)
+        else transformer_dtype
+    )
+    transformer_dtype = get_torch_dtype(transformer_dtype)
+    load_kwargs = {"low_cpu_mem_usage": True}
+    if transformer_dtype is not None:
+        load_kwargs["torch_dtype"] = transformer_dtype
+
+    fp8_state_path = os.path.join(transformer_path, FP8_STATE_FILE)
+
+    if transformer_dtype_name == "fp8" and not os.path.isfile(fp8_state_path):
+        raise FileNotFoundError(
+            f"FP8 transformer state file not found: {fp8_state_path}"
+        )
+
+    if transformer_dtype_name in ["auto", "fp8"] and os.path.isfile(fp8_state_path):
+        transformer = load_fp8_transformer(transformer_path)
+    else:
+        transformer = WanVACETransformer3DModel.from_pretrained(
+            transformer_path, **load_kwargs
+        )
+
+    if isinstance(transformer_cpu_offload, str):
+        transformer_cpu_offload = transformer_cpu_offload.lower()
+
+    if transformer_cpu_offload in [None, "none", "cuda", "false"]:
+        transformer = transformer.to(DEVICE)
+    elif transformer_cpu_offload == "group":
+        if not hasattr(transformer, "enable_group_offload"):
+            raise ValueError(
+                "Transformer group offload requires a Diffusers version with enable_group_offload support"
+            )
+        transformer.enable_group_offload(
+            onload_device=DEVICE,
+            offload_device=torch.device("cpu"),
+            offload_type="block_level",
+            num_blocks_per_group=1,
+        )
+    else:
+        raise ValueError(
+            f"Unknown transformer cpu offload option: {transformer_cpu_offload}"
+        )
+
+    return transformer
+
+
+class FlowMatchScheduler:
+    def __init__(
+        self,
+    ):
+        self.set_timesteps_fn = FlowMatchScheduler.set_timesteps_wan
+        self.num_train_timesteps = 1000
+
+    @staticmethod
+    def set_timesteps_wan(num_inference_steps=100, denoising_strength=1.0, shift=None):
+        sigma_min = 0.0
+        sigma_max = 1.0
+        shift = 5 if shift is None else shift
+        num_train_timesteps = 1000
+        sigma_start = sigma_min + (sigma_max - sigma_min) * denoising_strength
+        sigmas = torch.linspace(sigma_start, sigma_min, num_inference_steps + 1)[:-1]
+        sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
+        timesteps = sigmas * num_train_timesteps
+        return sigmas, timesteps
+
+    def set_timesteps(self, num_inference_steps=100, denoising_strength=1.0, **kwargs):
+        self.sigmas, self.timesteps = self.set_timesteps_fn(
+            num_inference_steps=num_inference_steps,
+            denoising_strength=denoising_strength,
+            **kwargs,
+        )
+
+    def step(self, model_output, timestep, sample, to_final=False, **kwargs):
+        if isinstance(timestep, torch.Tensor):
+            timestep = timestep.cpu()
+        timestep_id = torch.argmin((self.timesteps - timestep).abs())
+        sigma = self.sigmas[timestep_id]
+        if to_final or timestep_id + 1 >= len(self.timesteps):
+            sigma_ = 0
+        else:
+            sigma_ = self.sigmas[timestep_id + 1]
+        prev_sample = sample + model_output * (sigma_ - sigma)
+        return prev_sample
+
+
+def encode_vae_mode(vae, x):
+    dist = vae.encode(x).latent_dist
+    return dist.mode() if hasattr(dist, "mode") else dist.mean
+
+
+def basic_clean(text):
+    text = ftfy.fix_text(text)
+    text = html.unescape(html.unescape(text))
+    return text.strip()
+
+
+def whitespace_clean(text):
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip()
+    return text
+
+
+def prompt_clean(text):
+    text = whitespace_clean(basic_clean(text))
+    return text
+
+
+def get_t5_prompt_embeds(
+    prompt=None,
+    num_videos_per_prompt=1,
+    max_sequence_length=226,
+    device=None,
+    dtype=None,
+    tokenizer=None,
+    text_encoder=None,
+):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    prompt = [prompt_clean(u) for u in prompt]
+    batch_size = len(prompt)
+
+    text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=max_sequence_length,
+        truncation=True,
+        add_special_tokens=True,
+        return_attention_mask=True,
+        return_tensors="pt",
+    )
+    text_input_ids, mask = text_inputs.input_ids, text_inputs.attention_mask
+    seq_lens = mask.gt(0).sum(dim=1).long()
+
+    prompt_embeds = text_encoder(
+        text_input_ids.to(device), mask.to(device)
+    ).last_hidden_state
+    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    prompt_embeds = [u[:v] for u, v in zip(prompt_embeds, seq_lens)]
+    prompt_embeds = torch.stack(
+        [
+            torch.cat([u, u.new_zeros(max_sequence_length - u.size(0), u.size(1))])
+            for u in prompt_embeds
+        ],
+        dim=0,
+    )
+
+    _, seq_len, _ = prompt_embeds.shape
+    prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
+
+    return prompt_embeds
+
+
+def encode_prompt(
+    prompt,
+    negative_prompt=None,
+    do_classifier_free_guidance=True,
+    num_videos_per_prompt=1,
+    prompt_embeds=None,
+    negative_prompt_embeds=None,
+    max_sequence_length=226,
+    device=None,
+    dtype=None,
+    tokenizer=None,
+    text_encoder=None,
+):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    if prompt is not None:
+        batch_size = len(prompt)
+    else:
+        batch_size = prompt_embeds.shape[0]
+
+    if prompt_embeds is None:
+        prompt_embeds = get_t5_prompt_embeds(
+            prompt=prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            device=device,
+            dtype=dtype,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+        )
+
+    if do_classifier_free_guidance and negative_prompt_embeds is None:
+        negative_prompt = negative_prompt or ""
+        negative_prompt = (
+            batch_size * [negative_prompt]
+            if isinstance(negative_prompt, str)
+            else negative_prompt
+        )
+
+        if prompt is not None and type(prompt) is not type(negative_prompt):
+            raise TypeError(
+                f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
+                f" {type(prompt)}."
+            )
+        elif batch_size != len(negative_prompt):
+            raise ValueError(
+                f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
+                f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
+                " the batch size of `prompt`."
+            )
+
+        negative_prompt_embeds = get_t5_prompt_embeds(
+            prompt=negative_prompt,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            device=device,
+            dtype=dtype,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+        )
+
+    return prompt_embeds, negative_prompt_embeds
+
+
+def prepare_masks(
+    mask: torch.Tensor,
+    reference_images=None,
+    transformer_patch_size=None,
+    vae_scale_factor_temporal=None,
+    vae_scale_factor_spatial=None,
+) -> torch.Tensor:
+
+    if reference_images is None:
+        reference_images = [[None] for _ in range(mask.shape[0])]
+    else:
+        if mask.shape[0] != len(reference_images):
+            raise ValueError(
+                f"Batch size of `mask` {mask.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
+            )
+
+    mask_list = []
+    for mask_, reference_images_batch in zip(mask, reference_images):
+        num_channels, num_frames, height, width = mask_.shape
+        new_num_frames = (
+            num_frames + vae_scale_factor_temporal - 1
+        ) // vae_scale_factor_temporal
+        new_height = (
+            height
+            // (vae_scale_factor_spatial * transformer_patch_size)
+            * transformer_patch_size
+        )
+        new_width = (
+            width
+            // (vae_scale_factor_spatial * transformer_patch_size)
+            * transformer_patch_size
+        )
+        mask_ = mask_[0, :, :, :]
+        mask_ = mask_.view(
+            num_frames,
+            new_height,
+            vae_scale_factor_spatial,
+            new_width,
+            vae_scale_factor_spatial,
+        )
+        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(0, 1)
+        mask_ = torch.nn.functional.interpolate(
+            mask_.unsqueeze(0),
+            size=(new_num_frames, new_height, new_width),
+            mode="nearest-exact",
+        ).squeeze(0)
+        num_ref_images = len(reference_images_batch)
+        if num_ref_images > 0:
+            mask_padding = torch.zeros_like(mask_[:, :num_ref_images, :, :])
+            mask_ = torch.cat([mask_padding, mask_], dim=1)
+        mask_list.append(mask_)
+    return torch.stack(mask_list)
+
+
+def preprocess_conditions(
+    video=None,
+    mask=None,
+    reference_images=None,
+    batch_size: int = 1,
+    height: int = 480,
+    width: int = 832,
+    num_frames: int = 81,
+    dtype=None,
+    device=None,
+    video_processor=None,
+    base=None,
+):
+    if video is not None:
+        video_height, video_width = video_processor.get_default_height_width(video[0])
+
+        if video_height * video_width > height * width:
+            scale = min(width / video_width, height / video_height)
+            video_height, video_width = int(video_height * scale), int(
+                video_width * scale
+            )
+
+        if video_height % base != 0 or video_width % base != 0:
+            video_height = (video_height // base) * base
+            video_width = (video_width // base) * base
+
+        assert video_height * video_width <= height * width
+
+        video = video_processor.preprocess_video(video, video_height, video_width)
+        image_size = (
+            video_height,
+            video_width,
+        )
+    else:
+        video = torch.zeros(
+            batch_size, 3, num_frames, height, width, dtype=dtype, device=device
+        )
+        image_size = (height, width)
+
+    if mask is not None:
+        mask = video_processor.preprocess_video(mask, image_size[0], image_size[1])
+        mask = torch.clamp((mask + 1) / 2, min=0, max=1)
+    else:
+        mask = torch.ones_like(video)
+
+    video = video.to(dtype=dtype, device=device)
+    mask = mask.to(dtype=dtype, device=device)
+
+    if reference_images is None or isinstance(reference_images, Image.Image):
+        reference_images = [[reference_images] for _ in range(video.shape[0])]
+    elif isinstance(reference_images, (list, tuple)) and isinstance(
+        next(iter(reference_images)), Image.Image
+    ):
+        reference_images = [reference_images]
+    elif (
+        isinstance(reference_images, (list, tuple))
+        and isinstance(next(iter(reference_images)), list)
+        and isinstance(next(iter(reference_images[0])), Image.Image)
+    ):
+        reference_images = reference_images
+    else:
+        raise ValueError(
+            "`reference_images` has to be of type `PIL.Image.Image` or `list` of `PIL.Image.Image`, or "
+            "`list` of `list` of `PIL.Image.Image`, but is {type(reference_images)}"
+        )
+
+    if video.shape[0] != len(reference_images):
+        raise ValueError(
+            f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
+        )
+
+    ref_images_lengths = [
+        len(reference_images_batch) for reference_images_batch in reference_images
+    ]
+    if any(l != ref_images_lengths[0] for l in ref_images_lengths):
+        raise ValueError(
+            f"All batches of `reference_images` should have the same length, but got {ref_images_lengths}. Support for this "
+            "may be added in the future."
+        )
+
+    reference_images_preprocessed = []
+    for i, reference_images_batch in enumerate(reference_images):
+        preprocessed_images = []
+        for j, image in enumerate(reference_images_batch):
+            if image is None:
+                continue
+            image = video_processor.preprocess(image, None, None)
+            img_height, img_width = image.shape[-2:]
+            scale = min(image_size[0] / img_height, image_size[1] / img_width)
+            new_height, new_width = int(img_height * scale), int(img_width * scale)
+            resized_image = torch.nn.functional.interpolate(
+                image,
+                size=(new_height, new_width),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+            top = (image_size[0] - new_height) // 2
+            left = (image_size[1] - new_width) // 2
+            canvas = torch.ones(3, *image_size, device=device, dtype=dtype)
+            canvas[:, top : top + new_height, left : left + new_width] = resized_image
+            preprocessed_images.append(canvas)
+        reference_images_preprocessed.append(preprocessed_images)
+
+    return video, mask, reference_images_preprocessed
+
+
+def prepare_video_latents(
+    video: torch.Tensor,
+    mask: torch.Tensor,
+    reference_images=None,
+    device=None,
+    vae=None,
+) -> torch.Tensor:
+    if reference_images is None:
+        reference_images = [[None] for _ in range(video.shape[0])]
+    else:
+        if video.shape[0] != len(reference_images):
+            raise ValueError(
+                f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
+            )
+
+    vae_dtype = vae.dtype
+    video = video.to(dtype=vae_dtype)
+
+    latents_mean = torch.tensor(
+        vae.config.latents_mean, device=device, dtype=torch.float32
+    ).view(1, vae.config.z_dim, 1, 1, 1)
+    latents_std = 1.0 / torch.tensor(
+        vae.config.latents_std, device=device, dtype=torch.float32
+    ).view(1, vae.config.z_dim, 1, 1, 1)
+
+    if mask is None:
+        latents = encode_vae_mode(vae, video)
+        latents = ((latents.float() - latents_mean) * latents_std).to(vae_dtype)
+    else:
+        mask = torch.where(mask > 0.5, 1.0, 0.0).to(dtype=vae_dtype)
+        inactive = video * (1 - mask)
+        reactive = video * mask
+        inactive = encode_vae_mode(vae, inactive)
+        reactive = encode_vae_mode(vae, reactive)
+        inactive = ((inactive.float() - latents_mean) * latents_std).to(vae_dtype)
+        reactive = ((reactive.float() - latents_mean) * latents_std).to(vae_dtype)
+        latents = torch.cat([inactive, reactive], dim=1)
+
+    latent_list = []
+    for latent, reference_images_batch in zip(latents, reference_images):
+        for reference_image in reference_images_batch:
+            assert reference_image.ndim == 3
+            reference_image = reference_image.to(dtype=vae_dtype)
+            reference_image = reference_image[None, :, None, :, :]
+            reference_latent = vae.encode(reference_image).latent_dist.sample()
+            reference_latent = (
+                (reference_latent.float() - latents_mean) * latents_std
+            ).to(vae_dtype)
+            reference_latent = reference_latent.squeeze(0)
+            reference_latent = torch.cat(
+                [reference_latent, torch.zeros_like(reference_latent)], dim=0
+            )
+            latent = torch.cat([reference_latent.squeeze(0), latent], dim=1)
+        latent_list.append(latent)
+
+    return torch.stack(latent_list)
+
+
+def blend_h(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
+    weight_b = (torch.arange(overlap_size).view(1, 1, 1, 1, -1) / overlap_size).to(
+        b.device, dtype=b.dtype
+    )
+    b[:, :, :, :, :overlap_size] = (1 - weight_b) * a[
+        :, :, :, :, -overlap_size:
+    ] + weight_b * b[:, :, :, :, :overlap_size]
+    return b
+
+
+def blend_v(a: torch.Tensor, b: torch.Tensor, overlap_size: int) -> torch.Tensor:
+    weight_b = (torch.arange(overlap_size).view(1, 1, 1, -1, 1) / overlap_size).to(
+        b.device, dtype=b.dtype
+    )
+    b[:, :, :, :overlap_size, :] = (1 - weight_b) * a[
+        :, :, :, -overlap_size:, :
+    ] + weight_b * b[:, :, :, :overlap_size, :]
+    return b
+
+
+def run_wan_pipeline(
+    cond_frames,
+    mask_frames,
+    prompt_embeds,
+    transformer,
+    vae,
+    noise_scheduler,
+    videoprocessor,
+    vae_scale_factor_spatial,
+    vae_scale_factor_temporal,
+    transformer_patch_size,
+    vae_cpu_offload="none",
+):
+    height, width = cond_frames.shape[3], cond_frames.shape[4]
+    num_frames = cond_frames.shape[2]
+
+    if vae_cpu_offload == "manual":
+        vae.to(DEVICE)
+
+    with torch.inference_mode():
+        cond_frames_vp = cond_frames.permute(0, 2, 1, 3, 4)
+        mask_frames_vp = mask_frames.permute(0, 2, 1, 3, 4)
+
+        condition_video, mask, reference_images = preprocess_conditions(
+            video=cond_frames_vp,
+            mask=mask_frames_vp,
+            reference_images=None,
+            batch_size=1,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            dtype=DTYPE,
+            device=DEVICE,
+            video_processor=videoprocessor,
+            base=vae_scale_factor_spatial * transformer_patch_size,
+        )
+
+        conditioning_latents = prepare_video_latents(
+            condition_video, mask, reference_images, DEVICE, vae
+        )
+        mask_for_transformer = prepare_masks(
+            mask,
+            reference_images,
+            transformer_patch_size,
+            vae_scale_factor_temporal,
+            vae_scale_factor_spatial,
+        ).to(DEVICE, dtype=DTYPE)
+        control_hidden_states = torch.cat(
+            [conditioning_latents, mask_for_transformer], dim=1
+        ).to(DTYPE)
+
+    del (
+        condition_video,
+        mask,
+        reference_images,
+        conditioning_latents,
+        mask_for_transformer,
+    )
+
+    if vae_cpu_offload == "manual":
+        vae.to("cpu")
+        cleanup_cuda()
+
+    c = transformer.config.in_channels
+    f = (num_frames - 1) // vae_scale_factor_temporal + 1
+    h = height // vae_scale_factor_spatial
+    w = width // vae_scale_factor_spatial
+
+    latents = torch.randn(1, c, f, h, w, device=DEVICE, dtype=DTYPE)
+
+    for i, t in enumerate(noise_scheduler.timesteps):
+        timestep_tensor = t.unsqueeze(0).to(DEVICE, dtype=DTYPE)
+        with torch.no_grad():
+            model_pred = transformer(
+                hidden_states=latents,
+                timestep=timestep_tensor,
+                encoder_hidden_states=prompt_embeds,
+                control_hidden_states=control_hidden_states,
+                return_dict=False,
+            )[0]
+        latents = noise_scheduler.step(model_pred, t, latents)
+        del model_pred, timestep_tensor
+
+    del control_hidden_states
+
+    return latents
+
+
+def spatial_tiled_process(
+    cond_frames,
+    mask_frames,
+    tile_num,
+    tile_overlap,
+    prompt_embeds,
+    transformer,
+    vae,
+    noise_scheduler,
+    videoprocessor,
+    vae_scale_factor_spatial,
+    vae_scale_factor_temporal,
+    transformer_patch_size,
+    vae_cpu_offload="none",
+):
+    if tile_num == 1:
+        return run_wan_pipeline(
+            cond_frames,
+            mask_frames,
+            prompt_embeds,
+            transformer,
+            vae,
+            noise_scheduler,
+            videoprocessor,
+            vae_scale_factor_spatial,
+            vae_scale_factor_temporal,
+            transformer_patch_size,
+            vae_cpu_offload,
+        )
+
+    height = cond_frames.shape[3]
+    width = cond_frames.shape[4]
+
+    base = vae_scale_factor_spatial * transformer_patch_size
+    tile_size = (
+        int((height + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
+        int((width + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
+    )
+    tile_stride = (tile_size[0] - tile_overlap, tile_size[1] - tile_overlap)
+
+    cols = []
+    for i in range(tile_num):
+        rows = []
+        for j in range(tile_num):
+            h_start = min(i * tile_stride[0], height - tile_size[0])
+            w_start = min(j * tile_stride[1], width - tile_size[1])
+
+            cond_tile = cond_frames[
+                :,
+                :,
+                :,
+                h_start : h_start + tile_size[0],
+                w_start : w_start + tile_size[1],
+            ]
+            mask_tile = mask_frames[
+                :,
+                :,
+                :,
+                h_start : h_start + tile_size[0],
+                w_start : w_start + tile_size[1],
+            ]
+
+            tile_latent = run_wan_pipeline(
+                cond_tile,
+                mask_tile,
+                prompt_embeds,
+                transformer,
+                vae,
+                noise_scheduler,
+                videoprocessor,
+                vae_scale_factor_spatial,
+                vae_scale_factor_temporal,
+                transformer_patch_size,
+                vae_cpu_offload,
+            )
+            rows.append(tile_latent)
+            del cond_tile, mask_tile
+            cleanup_cuda()
+        cols.append(rows)
+
+    latent_stride = (
+        tile_stride[0] // vae_scale_factor_spatial,
+        tile_stride[1] // vae_scale_factor_spatial,
+    )
+    latent_overlap = (
+        tile_overlap // vae_scale_factor_spatial,
+        tile_overlap // vae_scale_factor_spatial,
+    )
+
+    results_cols = []
+    for i, rows in enumerate(cols):
+        results_rows = []
+        for j, tile in enumerate(rows):
+            if i > 0:
+                tile = blend_v(cols[i - 1][j], tile, latent_overlap[0])
+            if j > 0:
+                tile = blend_h(rows[j - 1], tile, latent_overlap[1])
+            results_rows.append(tile)
+        results_cols.append(results_rows)
+
+    pixels = []
+    for i, rows in enumerate(results_cols):
+        for j, tile in enumerate(rows):
+            if i < len(results_cols) - 1:
+                tile = tile[:, :, :, : latent_stride[0], :]
+            if j < len(rows) - 1:
+                tile = tile[:, :, :, :, : latent_stride[1]]
+            rows[j] = tile
+        pixels.append(torch.cat(rows, dim=4))
+
+    return torch.cat(pixels, dim=3)
+
+
+def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
+    batch_size, channels, num_frames = video_tensor.shape[:3]
+    video_tensor = video_tensor.permute(0, 2, 1, 3, 4).reshape(
+        batch_size * num_frames, channels, video_tensor.shape[3], video_tensor.shape[4]
+    )
+
+    if mode in ["linear", "bilinear", "bicubic", "trilinear"]:
+        video_tensor = F.interpolate(
+            video_tensor, size=(height, width), mode=mode, align_corners=False
+        )
+    else:
+        video_tensor = F.interpolate(video_tensor, size=(height, width), mode=mode)
+
+    return video_tensor.reshape(
+        batch_size, num_frames, channels, height, width
+    ).permute(0, 2, 1, 3, 4)
+
+
+def load_video_chunk(video_reader, start_frame, end_frame, inpaint_scale, base):
+    frame_indices = list(range(start_frame, end_frame))
+    frames = video_reader.get_batch(frame_indices)
+    frames = (
+        torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
+        / 255.0
+    )
+
+    height, width = frames.shape[3] // 2, frames.shape[4] // 2
+    frames_left = frames[:, :, :, :height, :width].clone()
+    all_masks = frames[:, :, :, height:, :width].clone()
+    all_frames = frames[:, :, :, height:, width:].clone()
+    del frames
+
+    if inpaint_scale != 1.0:
+        scaled_height = max(base, int(height * inpaint_scale) // base * base)
+        scaled_width = max(base, int(width * inpaint_scale) // base * base)
+        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
+        all_masks = resize_video_tensor(
+            all_masks, scaled_height, scaled_width, mode="nearest"
+        )
+        all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
+
+    all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
+
+    return frames_left, all_masks, all_frames
+
+
+def get_tiling_padding(height, width, tile_num, tile_overlap, base):
+    min_tile_h = (height + tile_overlap * (tile_num - 1)) / tile_num
+    tile_size_h = math.ceil(min_tile_h / base) * base
+
+    min_tile_w = (width + tile_overlap * (tile_num - 1)) / tile_num
+    tile_size_w = math.ceil(min_tile_w / base) * base
+
+    tile_stride_h = tile_size_h - tile_overlap
+    tile_stride_w = tile_size_w - tile_overlap
+
+    target_h = tile_stride_h * (tile_num - 1) + tile_size_h
+    target_w = tile_stride_w * (tile_num - 1) + tile_size_w
+
+    return target_h - height, target_w - width
+
+
+def pad_video_chunk(all_frames, all_masks, pad_h, pad_w):
+    if pad_h <= 0 and pad_w <= 0:
+        return all_frames, all_masks
+
+    frames_4d = all_frames[0].permute(1, 0, 2, 3)
+    frames_4d = F.pad(frames_4d, (0, pad_w, 0, pad_h), mode="replicate")
+    all_frames = frames_4d.permute(1, 0, 2, 3).unsqueeze(0)
+    all_masks = F.pad(all_masks, (0, pad_w, 0, pad_h), mode="constant", value=0)
+
+    return all_frames, all_masks
+
+
+def extract_video_context(video_chunks, start_frame, end_frame):
+    context_chunks = []
+    chunk_start = 0
+    for video_chunk in video_chunks:
+        chunk_end = chunk_start + video_chunk.shape[2]
+        overlap_start = max(start_frame, chunk_start)
+        overlap_end = min(end_frame, chunk_end)
+        if overlap_start < overlap_end:
+            context_chunks.append(
+                video_chunk[
+                    :, :, overlap_start - chunk_start : overlap_end - chunk_start
+                ]
+            )
+        chunk_start = chunk_end
+
+    if not context_chunks:
+        return None
+
+    return torch.cat(context_chunks, dim=2)
+
+
+def get_inpainting_output_paths(
+    input_video_path, output_path, output_video_path=None, anaglyph_video_path=None
+):
+    video_name = (
+        input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
+    )
+    if output_video_path is None:
+        output_video_path = os.path.join(output_path, f"{video_name}_2_sbs.mp4")
+    if anaglyph_video_path is None:
+        anaglyph_video_path = os.path.join(output_path, f"{video_name}_2_anaglyph.mp4")
+
+    return output_video_path, anaglyph_video_path
 
 
 if __name__ == "__main__":

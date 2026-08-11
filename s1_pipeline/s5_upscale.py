@@ -13,96 +13,6 @@ from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
 
 
-def get_video_size(input_video_path):
-    video = cv2.VideoCapture(str(input_video_path))
-    if not video.isOpened():
-        raise ValueError(f"Could not open video: {input_video_path}")
-
-    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    video.release()
-
-    if width <= 0 or height <= 0:
-        raise ValueError(f"Could not read video size: {input_video_path}")
-
-    return width, height
-
-
-def make_even(value):
-    value = int(round(value))
-    return value if value % 2 == 0 else value + 1
-
-
-def get_target_size(width, height, target_width, target_height):
-    scale = min(target_width / width, target_height / height)
-    target_width = make_even(width * scale)
-    target_height = make_even(height * scale)
-
-    return target_width, target_height
-
-
-def get_realesrgan_scaling_factor(width, height, target_width, target_height):
-    for scaling_factor in [4, 3, 2]:
-        if (
-            width * scaling_factor <= target_width
-            and height * scaling_factor <= target_height
-        ):
-            return scaling_factor
-
-    return None
-
-
-def run_video2x(
-    video2x_path,
-    input_video_path,
-    output_video_path,
-    scaling_factor,
-    realesrgan_model,
-    gpu,
-):
-    command = [
-        video2x_path,
-        "-i",
-        input_video_path,
-        "-o",
-        output_video_path,
-        "-p",
-        "realesrgan",
-        "-s",
-        str(scaling_factor),
-        "--realesrgan-model",
-        realesrgan_model,
-    ]
-
-    if gpu is not None:
-        command.extend(["-d", str(gpu)])
-
-    print("Running Video2X", flush=True)
-    run_command(command)
-
-
-def resize_video(input_video_path, output_video_path, width, height):
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    command = [
-        ffmpeg_path,
-        "-y",
-        "-i",
-        input_video_path,
-        "-vf",
-        f"scale={width}:{height}:flags=lanczos",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "copy",
-        output_video_path,
-    ]
-
-    print("Running resize", flush=True)
-    run_command(command)
-
-
 def main(
     input_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
     output_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
@@ -199,6 +109,96 @@ def main(
     for temp_path in temp_paths:
         if os.path.exists(temp_path) and temp_path != output_video_path:
             os.remove(temp_path)
+
+
+def get_video_size(input_video_path):
+    video = cv2.VideoCapture(str(input_video_path))
+    if not video.isOpened():
+        raise ValueError(f"Could not open video: {input_video_path}")
+
+    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video.release()
+
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Could not read video size: {input_video_path}")
+
+    return width, height
+
+
+def make_even(value):
+    value = int(round(value))
+    return value if value % 2 == 0 else value + 1
+
+
+def get_target_size(width, height, target_width, target_height):
+    scale = min(target_width / width, target_height / height)
+    target_width = make_even(width * scale)
+    target_height = make_even(height * scale)
+
+    return target_width, target_height
+
+
+def get_realesrgan_scaling_factor(width, height, target_width, target_height):
+    for scaling_factor in [4, 3, 2]:
+        if (
+            width * scaling_factor <= target_width
+            and height * scaling_factor <= target_height
+        ):
+            return scaling_factor
+
+    return None
+
+
+def run_video2x(
+    video2x_path,
+    input_video_path,
+    output_video_path,
+    scaling_factor,
+    realesrgan_model,
+    gpu,
+):
+    command = [
+        video2x_path,
+        "-i",
+        input_video_path,
+        "-o",
+        output_video_path,
+        "-p",
+        "realesrgan",
+        "-s",
+        str(scaling_factor),
+        "--realesrgan-model",
+        realesrgan_model,
+    ]
+
+    if gpu is not None:
+        command.extend(["-d", str(gpu)])
+
+    print("Running Video2X", flush=True)
+    run_command(command)
+
+
+def resize_video(input_video_path, output_video_path, width, height):
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        input_video_path,
+        "-vf",
+        f"scale={width}:{height}:flags=lanczos",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "copy",
+        output_video_path,
+    ]
+
+    print("Running resize", flush=True)
+    run_command(command)
 
 
 if __name__ == "__main__":

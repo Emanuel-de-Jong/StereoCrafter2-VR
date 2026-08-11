@@ -46,7 +46,7 @@ python -u s1_pipeline/s2_inpainting.py \
 	--transformer_cpu_offload none \
 	--vae_cpu_offload manual \
 	--inpaint_scale 0.5 \
-	--inference_steps 5
+	--inference_steps 10
 
 printf "\n\n=== STEP 3: GREENSCREEN ===\n"
 python -u s1_pipeline/s3_greenscreen.py \

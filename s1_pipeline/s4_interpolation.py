@@ -14,6 +14,83 @@ from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
 
 
+def main(
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    video2x_path: str = str(g.VIDEO2X_PATH),
+    target_fps: int = 45,
+    rife_model: str = "rife-v4.25",
+    gpu: int = 0,
+    scene_thresh: int = 100,
+    crf: int = 16,
+    preset: str = "medium",
+    overwrite: bool = False,
+):
+    if should_skip_output(output_video_path, overwrite):
+        return
+
+    if not os.path.isfile(input_video_path):
+        raise FileNotFoundError(f"Input video not found: {input_video_path}")
+    if not os.path.isfile(video2x_path):
+        raise FileNotFoundError(f"Video2X AppImage not found: {video2x_path}")
+    if target_fps <= 0:
+        raise ValueError(f"target_fps must be greater than 0, got: {target_fps}")
+
+    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
+
+    input_fps = get_video_fps(input_video_path)
+    frame_rate_multiplier = get_frame_rate_multiplier(input_fps, target_fps)
+    interpolated_fps = input_fps * frame_rate_multiplier
+    print(f"Input FPS: {input_fps:.3f}", flush=True)
+    print(f"Target FPS: {target_fps}", flush=True)
+
+    if input_fps >= target_fps:
+        print("Input FPS is already at or above target FPS, copying video.", flush=True)
+        shutil.copy2(input_video_path, output_video_path)
+        return
+
+    print(f"RIFE model: {rife_model}", flush=True)
+    print(f"Frame rate multiplier: {frame_rate_multiplier}x", flush=True)
+
+    if abs(interpolated_fps - target_fps) < 0.01:
+        run_rife_interpolation(
+            video2x_path,
+            input_video_path,
+            output_video_path,
+            frame_rate_multiplier,
+            rife_model,
+            gpu,
+            scene_thresh,
+        )
+        return
+
+    temp_output_path = os.path.join(
+        os.path.dirname(output_video_path) or ".",
+        f".{os.path.splitext(os.path.basename(output_video_path))[0]}_rife.mp4",
+    )
+
+    try:
+        run_rife_interpolation(
+            video2x_path,
+            input_video_path,
+            temp_output_path,
+            frame_rate_multiplier,
+            rife_model,
+            gpu,
+            scene_thresh,
+        )
+        conform_video_fps(
+            temp_output_path,
+            output_video_path,
+            target_fps,
+            crf,
+            preset,
+        )
+    finally:
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+
+
 def get_video_fps(input_video_path):
     import cv2
 
@@ -90,83 +167,6 @@ def conform_video_fps(input_video_path, output_video_path, target_fps, crf, pres
 
     print("Conforming FPS", flush=True)
     run_command(command)
-
-
-def main(
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
-    video2x_path: str = str(g.VIDEO2X_PATH),
-    target_fps: int = 45,
-    rife_model: str = "rife-v4.25",
-    gpu: int = 0,
-    scene_thresh: int = 100,
-    crf: int = 16,
-    preset: str = "medium",
-    overwrite: bool = False,
-):
-    if should_skip_output(output_video_path, overwrite):
-        return
-
-    if not os.path.isfile(input_video_path):
-        raise FileNotFoundError(f"Input video not found: {input_video_path}")
-    if not os.path.isfile(video2x_path):
-        raise FileNotFoundError(f"Video2X AppImage not found: {video2x_path}")
-    if target_fps <= 0:
-        raise ValueError(f"target_fps must be greater than 0, got: {target_fps}")
-
-    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
-
-    input_fps = get_video_fps(input_video_path)
-    frame_rate_multiplier = get_frame_rate_multiplier(input_fps, target_fps)
-    interpolated_fps = input_fps * frame_rate_multiplier
-    print(f"Input FPS: {input_fps:.3f}", flush=True)
-    print(f"Target FPS: {target_fps}", flush=True)
-
-    if input_fps >= target_fps:
-        print("Input FPS is already at or above target FPS, copying video.", flush=True)
-        shutil.copy2(input_video_path, output_video_path)
-        return
-
-    print(f"RIFE model: {rife_model}", flush=True)
-    print(f"Frame rate multiplier: {frame_rate_multiplier}x", flush=True)
-
-    if abs(interpolated_fps - target_fps) < 0.01:
-        run_rife_interpolation(
-            video2x_path,
-            input_video_path,
-            output_video_path,
-            frame_rate_multiplier,
-            rife_model,
-            gpu,
-            scene_thresh,
-        )
-        return
-
-    temp_output_path = os.path.join(
-        os.path.dirname(output_video_path) or ".",
-        f".{os.path.splitext(os.path.basename(output_video_path))[0]}_rife.mp4",
-    )
-
-    try:
-        run_rife_interpolation(
-            video2x_path,
-            input_video_path,
-            temp_output_path,
-            frame_rate_multiplier,
-            rife_model,
-            gpu,
-            scene_thresh,
-        )
-        conform_video_fps(
-            temp_output_path,
-            output_video_path,
-            target_fps,
-            crf,
-            preset,
-        )
-    finally:
-        if os.path.exists(temp_output_path):
-            os.remove(temp_output_path)
 
 
 if __name__ == "__main__":

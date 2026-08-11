@@ -24,7 +24,7 @@ def main(
     output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
     depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
     enabled=True,
-    model_type="rvm",
+    model_type="detr",
     model_path="facebook/detr-resnet-50-panoptic",
     rvm_model_path="resnet50",
     rvm_downsample_ratio=0.25,

@@ -55,7 +55,7 @@ python -u s1_pipeline/s3_greenscreen.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mkv" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mkv" \
 	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
-	--enabled False
+	--enabled True
 
 printf "\n\n=== STEP 4: INTERPOLATION ===\n"
 python -u s1_pipeline/s4_interpolation.py \
@@ -72,7 +72,7 @@ printf "\n\n=== STEP 6: GREEN CLEANUP ===\n"
 python -u s1_pipeline/s6_green_cleanup.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_6_result.mp4" \
-	--enabled False
+	--enabled True
 
 CONVERT_END_SECONDS=$(date +%s)
 CONVERT_DURATION_SECONDS=$((CONVERT_END_SECONDS - CONVERT_START_SECONDS))

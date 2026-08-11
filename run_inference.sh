@@ -39,7 +39,7 @@ printf "\n=== STEP 3 ==="
 python -u s3_interpolation.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mp4" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_interp.mp4" \
-	--target_fps 30
+	--target_fps 45
 
 printf "\n\n=== STEP 4 ==="
 python -u s4_upscale.py \

@@ -52,7 +52,7 @@ pip install -r requirements.txt
 #### 1. Install customized 'Forward-Warp' package for forward splatting
 
 ```bash
-cd ./dependency/Forward-Warp
+cd ./dependencies/Forward-Warp
 # Manually copy the content of Forward-Warp-Overwrites into Forward-Warp
 chmod a+x install.sh
 CC=gcc-12 CXX=g++-12 ./install.sh
@@ -61,15 +61,15 @@ CC=gcc-12 CXX=g++-12 ./install.sh
 #### 2. Apply DepthCrafter changes
 
 ```bash
-cd ./dependency/
+cd ./dependencies/
 # Manually copy the content of DepthCrafter-Overwrites into DepthCrafter
 ```
 
 #### 3. Download Video2X
 
 1. Download this [AppImage](https://github.com/k4yt3x/video2x/releases/download/6.4.0/Video2X-x86_64.AppImage).
-2. Put it in `dependency/` in a new folder `Video2X/`.
-3. `chmod +x dependency/Video2X/Video2X-x86_64.AppImage`.
+2. Put it in `dependencies/` in a new folder `Video2X/`.
+3. `chmod +x dependencies/Video2X/Video2X-x86_64.AppImage`.
 
 ## 📦 Model Weights
 

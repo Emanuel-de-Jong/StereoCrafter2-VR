@@ -2,7 +2,6 @@ import os
 import sys
 import math
 import gc
-from dataclasses import dataclass
 from pathlib import Path
 import torch
 import torch.nn.functional as F
@@ -931,68 +930,25 @@ def get_inpainting_output_paths(
     return output_video_path, anaglyph_video_path
 
 
-@dataclass
-class InpaintingConfig:
-    pre_trained_path: str = str(g.WAN_WEIGHTS_PATH)
-    transformer_path: str = str(g.STEREOCRAFTER_WEIGHTS_PATH)
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4")
-    output_path: str = str(g.OUTPUTS_DIR)
-    output_video_path: str | None = None
-    anaglyph_video_path: str | None = None
-    frames_chunk: int = g.INPAINT_FRAMES_CHUNK
-    frames_overlap: int = g.INPAINT_FRAMES_OVERLAP
-    tile_overlap: int = 128
-    tile_num: int = g.INPAINT_TILE_NUM
-    inference_steps: int = g.INPAINT_INFERENCE_STEPS
-    inpaint_scale: float = g.INPAINT_SCALE
-    transformer_dtype: str = g.INPAINT_TRANSFORMER_DTYPE
-    transformer_cpu_offload: str = g.INPAINT_TRANSFORMER_CPU_OFFLOAD
-    vae_cpu_offload: str = g.INPAINT_VAE_CPU_OFFLOAD
-    seed: int = 0
-    overwrite: bool = False
-
-
-def run(config: InpaintingConfig) -> StepResult:
-    return _run_step(
-        pre_trained_path=config.pre_trained_path,
-        transformer_path=config.transformer_path,
-        input_video_path=config.input_video_path,
-        output_path=config.output_path,
-        output_video_path=config.output_video_path,
-        anaglyph_video_path=config.anaglyph_video_path,
-        frames_chunk=config.frames_chunk,
-        frames_overlap=config.frames_overlap,
-        tile_overlap=config.tile_overlap,
-        tile_num=config.tile_num,
-        inference_steps=config.inference_steps,
-        inpaint_scale=config.inpaint_scale,
-        transformer_dtype=config.transformer_dtype,
-        transformer_cpu_offload=config.transformer_cpu_offload,
-        vae_cpu_offload=config.vae_cpu_offload,
-        seed=config.seed,
-        overwrite=config.overwrite,
-    )
-
-
-def _run_step(
-    pre_trained_path=str(g.WAN_WEIGHTS_PATH),
-    transformer_path=str(g.STEREOCRAFTER_WEIGHTS_PATH),
-    input_video_path=str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
-    output_path=str(g.OUTPUTS_DIR),
-    output_video_path=None,
-    anaglyph_video_path=None,
-    frames_chunk=g.INPAINT_FRAMES_CHUNK,
-    frames_overlap=g.INPAINT_FRAMES_OVERLAP,
-    tile_overlap=128,
-    tile_num=g.INPAINT_TILE_NUM,
-    inference_steps=g.INPAINT_INFERENCE_STEPS,
-    inpaint_scale=g.INPAINT_SCALE,
-    transformer_dtype=g.INPAINT_TRANSFORMER_DTYPE,
-    transformer_cpu_offload=g.INPAINT_TRANSFORMER_CPU_OFFLOAD,
-    vae_cpu_offload=g.INPAINT_VAE_CPU_OFFLOAD,
-    seed=0,
-    overwrite=False,
-):
+def main(
+    pre_trained_path: str = str(g.WAN_WEIGHTS_PATH),
+    transformer_path: str = str(g.STEREOCRAFTER_WEIGHTS_PATH),
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    output_path: str = str(g.OUTPUTS_DIR),
+    output_video_path: str | None = None,
+    anaglyph_video_path: str | None = None,
+    frames_chunk: int = 17,
+    frames_overlap: int = 2,
+    tile_overlap: int = 128,
+    tile_num: int = 2,
+    inference_steps: int = 5,
+    inpaint_scale: float = 0.5,
+    transformer_dtype: str = "fp8",
+    transformer_cpu_offload: str = "none",
+    vae_cpu_offload: str = "manual",
+    seed: int = 0,
+    overwrite: bool = False,
+) -> StepResult:
     frames_sbs_path, vid_anaglyph_path = get_inpainting_output_paths(
         input_video_path, output_path, output_video_path, anaglyph_video_path
     )
@@ -1240,48 +1196,5 @@ def _run_step(
     export_to_video(vid_anaglyph_frames_list, vid_anaglyph_path, fps=int(fps))
 
     return StepResult(frames_sbs_path, extra_paths)
-
-
-def main(
-    pre_trained_path=str(g.WAN_WEIGHTS_PATH),
-    transformer_path=str(g.STEREOCRAFTER_WEIGHTS_PATH),
-    input_video_path=str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
-    output_path=str(g.OUTPUTS_DIR),
-    output_video_path=None,
-    anaglyph_video_path=None,
-    frames_chunk=g.INPAINT_FRAMES_CHUNK,
-    frames_overlap=g.INPAINT_FRAMES_OVERLAP,
-    tile_overlap=128,
-    tile_num=g.INPAINT_TILE_NUM,
-    inference_steps=g.INPAINT_INFERENCE_STEPS,
-    inpaint_scale=g.INPAINT_SCALE,
-    transformer_dtype=g.INPAINT_TRANSFORMER_DTYPE,
-    transformer_cpu_offload=g.INPAINT_TRANSFORMER_CPU_OFFLOAD,
-    vae_cpu_offload=g.INPAINT_VAE_CPU_OFFLOAD,
-    seed=0,
-    overwrite=False,
-):
-    config = InpaintingConfig(
-        pre_trained_path=pre_trained_path,
-        transformer_path=transformer_path,
-        input_video_path=input_video_path,
-        output_path=output_path,
-        output_video_path=output_video_path,
-        anaglyph_video_path=anaglyph_video_path,
-        frames_chunk=frames_chunk,
-        frames_overlap=frames_overlap,
-        tile_overlap=tile_overlap,
-        tile_num=tile_num,
-        inference_steps=inference_steps,
-        inpaint_scale=inpaint_scale,
-        transformer_dtype=transformer_dtype,
-        transformer_cpu_offload=transformer_cpu_offload,
-        vae_cpu_offload=vae_cpu_offload,
-        seed=seed,
-        overwrite=overwrite,
-    )
-    return run(config)
-
-
 if __name__ == "__main__":
     Fire(monitor_step("Step 2 - Inpainting")(main))

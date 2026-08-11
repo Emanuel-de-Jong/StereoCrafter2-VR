@@ -1,17 +1,37 @@
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import imageio_ffmpeg
+import cv2
 from fire import Fire
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import s0_utils.global_params as g
-from s0_utils.helpers import get_video_size, make_even, run_command, should_skip_output
+from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
 from s1_pipeline.step_contracts import StepResult
+
+
+def get_video_size(input_video_path):
+    video = cv2.VideoCapture(str(input_video_path))
+    if not video.isOpened():
+        raise ValueError(f"Could not open video: {input_video_path}")
+
+    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video.release()
+
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Could not read video size: {input_video_path}")
+
+    return width, height
+
+
+def make_even(value):
+    value = int(round(value))
+    return value if value % 2 == 0 else value + 1
 
 
 def get_target_size(width, height, target_width, target_height):
@@ -84,40 +104,37 @@ def resize_video(input_video_path, output_video_path, width, height):
     run_command(command)
 
 
-@dataclass
-class UpscaleConfig:
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4")
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4")
-    video2x_path: str = str(g.VIDEO2X_PATH)
-    target_width: int = g.UPSCALE_TARGET_WIDTH
-    target_height: int = g.UPSCALE_TARGET_HEIGHT
-    realesrgan_model: str = "realesr-animevideov3"
-    gpu: int = 0
-    overwrite: bool = False
+def main(
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    video2x_path: str = str(g.VIDEO2X_PATH),
+    target_width: int = 5120,
+    target_height: int = 2560,
+    realesrgan_model: str = "realesr-animevideov3",
+    gpu: int = 0,
+    overwrite: bool = False,
+) -> StepResult:
+    if should_skip_output(output_video_path, overwrite):
+        return StepResult(output_video_path, skipped=True)
 
+    if not os.path.isfile(input_video_path):
+        raise FileNotFoundError(f"Input video not found: {input_video_path}")
+    if not os.path.isfile(video2x_path):
+        raise FileNotFoundError(f"Video2X AppImage not found: {video2x_path}")
 
-def run(config: UpscaleConfig) -> StepResult:
-    if should_skip_output(config.output_video_path, config.overwrite):
-        return StepResult(config.output_video_path, skipped=True)
-
-    if not os.path.isfile(config.input_video_path):
-        raise FileNotFoundError(f"Input video not found: {config.input_video_path}")
-    if not os.path.isfile(config.video2x_path):
-        raise FileNotFoundError(f"Video2X AppImage not found: {config.video2x_path}")
-
-    width, height = get_video_size(config.input_video_path)
+    width, height = get_video_size(input_video_path)
     print(f"Input video size: {width}x{height}", flush=True)
 
     target_output_width, target_output_height = get_target_size(
-        width, height, config.target_width, config.target_height
+        width, height, target_width, target_height
     )
     print(
         f"Target output size: {target_output_width}x{target_output_height}", flush=True
     )
 
-    os.makedirs(os.path.dirname(config.output_video_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
 
-    current_input_path = config.input_video_path
+    current_input_path = input_video_path
     current_width = width
     current_height = height
     temp_paths = []
@@ -133,8 +150,8 @@ def run(config: UpscaleConfig) -> StepResult:
 
         pass_index += 1
         temp_output_path = os.path.join(
-            os.path.dirname(config.output_video_path) or ".",
-            f".{os.path.splitext(os.path.basename(config.output_video_path))[0]}_realesrgan_{pass_index}.mp4",
+            os.path.dirname(output_video_path) or ".",
+            f".{os.path.splitext(os.path.basename(output_video_path))[0]}_realesrgan_{pass_index}.mp4",
         )
         temp_paths.append(temp_output_path)
 
@@ -145,12 +162,12 @@ def run(config: UpscaleConfig) -> StepResult:
             flush=True,
         )
         run_video2x(
-            config.video2x_path,
+            video2x_path,
             current_input_path,
             temp_output_path,
             scaling_factor,
-            config.realesrgan_model,
-            config.gpu,
+            realesrgan_model,
+            gpu,
         )
 
         current_input_path = temp_output_path
@@ -158,16 +175,16 @@ def run(config: UpscaleConfig) -> StepResult:
         current_height = output_height
 
     if current_width == target_output_width and current_height == target_output_height:
-        if current_input_path == config.input_video_path:
-            os.makedirs(os.path.dirname(config.output_video_path) or ".", exist_ok=True)
+        if current_input_path == input_video_path:
+            os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
             resize_video(
                 current_input_path,
-                config.output_video_path,
+                output_video_path,
                 current_width,
                 current_height,
             )
         else:
-            os.replace(current_input_path, config.output_video_path)
+            os.replace(current_input_path, output_video_path)
     else:
         print(
             f"Exact resize: {current_width}x{current_height} -> {target_output_width}x{target_output_height}",
@@ -175,39 +192,16 @@ def run(config: UpscaleConfig) -> StepResult:
         )
         resize_video(
             current_input_path,
-            config.output_video_path,
+            output_video_path,
             target_output_width,
             target_output_height,
         )
 
     for temp_path in temp_paths:
-        if os.path.exists(temp_path) and temp_path != config.output_video_path:
+        if os.path.exists(temp_path) and temp_path != output_video_path:
             os.remove(temp_path)
 
-    return StepResult(config.output_video_path)
-
-
-def main(
-    input_video_path=str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
-    output_video_path=str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
-    video2x_path=str(g.VIDEO2X_PATH),
-    target_width=g.UPSCALE_TARGET_WIDTH,
-    target_height=g.UPSCALE_TARGET_HEIGHT,
-    realesrgan_model="realesr-animevideov3",
-    gpu=0,
-    overwrite=False,
-):
-    config = UpscaleConfig(
-        input_video_path=input_video_path,
-        output_video_path=output_video_path,
-        video2x_path=video2x_path,
-        target_width=target_width,
-        target_height=target_height,
-        realesrgan_model=realesrgan_model,
-        gpu=gpu,
-        overwrite=overwrite,
-    )
-    return run(config)
+    return StepResult(output_video_path)
 
 
 if __name__ == "__main__":

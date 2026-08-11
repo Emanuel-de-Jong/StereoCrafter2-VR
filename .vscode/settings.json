@@ -2,7 +2,7 @@
     "formatFiles.excludedFolders": [
         ".git",
         ".vscode",
-        "dependency",
+        "dependencies",
         "examples",
         "weights",
         "License-Code.txt",

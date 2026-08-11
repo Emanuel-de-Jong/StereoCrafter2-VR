@@ -2,7 +2,6 @@ import os
 import math
 import shutil
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -11,9 +10,25 @@ from fire import Fire
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import s0_utils.global_params as g
-from s0_utils.helpers import get_video_fps, run_command, should_skip_output
+from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
 from s1_pipeline.step_contracts import StepResult
+
+
+def get_video_fps(input_video_path):
+    import cv2
+
+    video = cv2.VideoCapture(str(input_video_path))
+    if not video.isOpened():
+        raise ValueError(f"Could not open video: {input_video_path}")
+
+    fps = video.get(cv2.CAP_PROP_FPS)
+    video.release()
+
+    if fps <= 0:
+        raise ValueError(f"Could not read video FPS: {input_video_path}")
+
+    return fps
 
 
 def get_frame_rate_multiplier(input_fps, target_fps):
@@ -78,113 +93,83 @@ def conform_video_fps(input_video_path, output_video_path, target_fps, crf, pres
     run_command(command)
 
 
-@dataclass
-class InterpolationConfig:
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4")
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4")
-    video2x_path: str = str(g.VIDEO2X_PATH)
-    target_fps: int = g.INTERPOLATION_TARGET_FPS
-    rife_model: str = "rife-v4.25"
-    gpu: int = 0
-    scene_thresh: int = 100
-    crf: int = 16
-    preset: str = "medium"
-    overwrite: bool = False
+def main(
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
+    video2x_path: str = str(g.VIDEO2X_PATH),
+    target_fps: int = 45,
+    rife_model: str = "rife-v4.25",
+    gpu: int = 0,
+    scene_thresh: int = 100,
+    crf: int = 16,
+    preset: str = "medium",
+    overwrite: bool = False,
+) -> StepResult:
+    if should_skip_output(output_video_path, overwrite):
+        return StepResult(output_video_path, skipped=True)
 
+    if not os.path.isfile(input_video_path):
+        raise FileNotFoundError(f"Input video not found: {input_video_path}")
+    if not os.path.isfile(video2x_path):
+        raise FileNotFoundError(f"Video2X AppImage not found: {video2x_path}")
+    if target_fps <= 0:
+        raise ValueError(f"target_fps must be greater than 0, got: {target_fps}")
 
-def run(config: InterpolationConfig) -> StepResult:
-    if should_skip_output(config.output_video_path, config.overwrite):
-        return StepResult(config.output_video_path, skipped=True)
+    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
 
-    if not os.path.isfile(config.input_video_path):
-        raise FileNotFoundError(f"Input video not found: {config.input_video_path}")
-    if not os.path.isfile(config.video2x_path):
-        raise FileNotFoundError(f"Video2X AppImage not found: {config.video2x_path}")
-    if config.target_fps <= 0:
-        raise ValueError(f"target_fps must be greater than 0, got: {config.target_fps}")
-
-    os.makedirs(os.path.dirname(config.output_video_path) or ".", exist_ok=True)
-
-    input_fps = get_video_fps(config.input_video_path)
-    frame_rate_multiplier = get_frame_rate_multiplier(input_fps, config.target_fps)
+    input_fps = get_video_fps(input_video_path)
+    frame_rate_multiplier = get_frame_rate_multiplier(input_fps, target_fps)
     interpolated_fps = input_fps * frame_rate_multiplier
     print(f"Input FPS: {input_fps:.3f}", flush=True)
-    print(f"Target FPS: {config.target_fps}", flush=True)
+    print(f"Target FPS: {target_fps}", flush=True)
 
-    if input_fps >= config.target_fps:
+    if input_fps >= target_fps:
         print("Input FPS is already at or above target FPS, copying video.", flush=True)
-        shutil.copy2(config.input_video_path, config.output_video_path)
-        return StepResult(config.output_video_path)
+        shutil.copy2(input_video_path, output_video_path)
+        return StepResult(output_video_path)
 
-    print(f"RIFE model: {config.rife_model}", flush=True)
+    print(f"RIFE model: {rife_model}", flush=True)
     print(f"Frame rate multiplier: {frame_rate_multiplier}x", flush=True)
 
-    if abs(interpolated_fps - config.target_fps) < 0.01:
+    if abs(interpolated_fps - target_fps) < 0.01:
         run_rife_interpolation(
-            config.video2x_path,
-            config.input_video_path,
-            config.output_video_path,
+            video2x_path,
+            input_video_path,
+            output_video_path,
             frame_rate_multiplier,
-            config.rife_model,
-            config.gpu,
-            config.scene_thresh,
+            rife_model,
+            gpu,
+            scene_thresh,
         )
-        return StepResult(config.output_video_path)
+        return StepResult(output_video_path)
 
     temp_output_path = os.path.join(
-        os.path.dirname(config.output_video_path) or ".",
-        f".{os.path.splitext(os.path.basename(config.output_video_path))[0]}_rife.mp4",
+        os.path.dirname(output_video_path) or ".",
+        f".{os.path.splitext(os.path.basename(output_video_path))[0]}_rife.mp4",
     )
 
     try:
         run_rife_interpolation(
-            config.video2x_path,
-            config.input_video_path,
+            video2x_path,
+            input_video_path,
             temp_output_path,
             frame_rate_multiplier,
-            config.rife_model,
-            config.gpu,
-            config.scene_thresh,
+            rife_model,
+            gpu,
+            scene_thresh,
         )
         conform_video_fps(
             temp_output_path,
-            config.output_video_path,
-            config.target_fps,
-            config.crf,
-            config.preset,
+            output_video_path,
+            target_fps,
+            crf,
+            preset,
         )
     finally:
         if os.path.exists(temp_output_path):
             os.remove(temp_output_path)
 
-    return StepResult(config.output_video_path)
-
-
-def main(
-    input_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
-    output_video_path=str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
-    video2x_path=str(g.VIDEO2X_PATH),
-    target_fps=g.INTERPOLATION_TARGET_FPS,
-    rife_model="rife-v4.25",
-    gpu=0,
-    scene_thresh=100,
-    crf=16,
-    preset="medium",
-    overwrite=False,
-):
-    config = InterpolationConfig(
-        input_video_path=input_video_path,
-        output_video_path=output_video_path,
-        video2x_path=video2x_path,
-        target_fps=target_fps,
-        rife_model=rife_model,
-        gpu=gpu,
-        scene_thresh=scene_thresh,
-        crf=crf,
-        preset=preset,
-        overwrite=overwrite,
-    )
-    return run(config)
+    return StepResult(output_video_path)
 
 
 if __name__ == "__main__":

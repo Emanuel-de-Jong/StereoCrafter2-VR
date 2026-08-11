@@ -120,7 +120,7 @@ class DepthCrafterDemo:
         target_fps: int = -1,
         seed: int = 42,
         track_time: bool = False,
-        save_depth: bool = False,
+        save_depth: bool = True,
         decode_chunk_size: int = 8,
     ):
         set_seed(seed)
@@ -338,7 +338,7 @@ def main(
     target_fps: int = -1,
     seed: int = 42,
     track_time: bool = False,
-    save_depth: bool = False,
+    save_depth: bool = True,
     decode_chunk_size: int = 8,
     overwrite: bool = False,
 ):

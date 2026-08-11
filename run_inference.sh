@@ -14,13 +14,13 @@ python -u s1_depth_splatting_inference.py \
 	--unet_path ./weights/DepthCrafter \
 	--input_video_path "$INPUT_VIDEO_PATH" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
+	--max_disp 28 \
 	--target_fps 15 \
 	--max_res 768 \
 	--window_size 49 \
 	--overlap 10 \
 	--decode_chunk_size 4 \
-	--cpu_offload model \
-	--save_depth True
+	--cpu_offload model
 
 printf "\n\n=== STEP 2 ===\n"
 python -u s2_inpainting_inference.py \

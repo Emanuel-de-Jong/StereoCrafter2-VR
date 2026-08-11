@@ -130,7 +130,7 @@ conda activate stereocrafter2
 ./run_batch.sh
 ```
 
-There are two main steps in these scripts for generating stereo video.
+There are six main steps in these scripts for generating stereo video.
 
 #### 1. Depth-Based Video Splatting Using the Video Depth from DepthCrafter
 
@@ -169,6 +169,39 @@ Arguments:
 - `--tile_num`: The number of tiles in width and height dimensions for tiled processing, which allows for handling high resolution input without requiring more GPU memory. The default value is `1` (1 $\times$ 1 tile). For input videos with a resolution of 2K or higher, you could use more tiles to avoid running out of memory.
 
 The stereo video inpainting generates the stereo video result in side-by-side format and anaglyph 3D format, as shown below:
+
+#### 3. Optional Green-Screen Background Replacement
+
+The shell scripts enable green-screen replacement by default after stereo inpainting and before frame interpolation/upscale. Step 1 saves the DepthCrafter depth map, and the green-screen stage reuses it for depth-aware main-subject selection:
+
+```bash
+./run_inference.sh ./inputs/vid.mp4
+```
+
+The Python stage itself is off by default unless `--enabled True` is passed:
+
+```bash
+python s3_greenscreen.py --input_video_path ./outputs/vid_2_sbs.mp4 \
+                         --output_video_path ./outputs/vid_3_greenscreen.mp4 \
+                         --depth_npz_path ./outputs/vid_1_splatting.npz \
+                         --enabled True
+```
+
+This stage uses video streaming, processes side-by-side stereo frames, replaces non-foreground pixels with green, and applies temporal mask smoothing plus edge feathering.
+The default selection mode is `main_subject`, which scores segmented objects using segment size, centrality, confidence, and the reused DepthCrafter depth map. It keeps the strongest main subject/object and additional clear main-focus subjects. Use `--selection_mode classes` with `--foreground_classes` when you want an explicit class filter instead.
+
+#### 6. Final Green Cleanup
+
+Frame interpolation, neural upscaling, and video encoding can shift pure green pixels away from the exact target color. The shell pipeline therefore runs a final cleanup pass after upscale:
+
+```bash
+python s6_green_cleanup.py --input_video_path ./outputs/vid_5_upscale.mp4 \
+                           --output_video_path ./outputs/vid_6_greenscreen.mp4 \
+                           --enabled True
+```
+
+This pass snaps pixels that are close to the chosen green and clearly green-dominant back to exact `0,255,0`. It is intended to stabilize the final chroma-key background after interpolation and upscaling.
+It also writes best-effort MP4 metadata tags for VR/video players that inspect chroma-key metadata. There is no universal cross-player MP4 standard for passthrough chroma key metadata, so custom tags can be added with `--metadata_items key=value,other_key=value`.
 
 ## 🤝 Acknowledgements
 

@@ -9,5 +9,5 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 	[ -e "$video" ] || continue
 
 	./run_inference.sh "$video"
-	printf "\n-----------------------------------\n"
+	printf "\n\n-----------------------------------\n\n"
 done

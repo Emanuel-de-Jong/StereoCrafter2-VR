@@ -8,7 +8,7 @@ mkdir -p "$OUTPUT_DIR"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-printf "=== STEP 1 ==="
+printf "=== STEP 1 ===\n"
 python -u s1_depth_splatting_inference.py \
 	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
 	--unet_path ./weights/DepthCrafter \
@@ -19,9 +19,10 @@ python -u s1_depth_splatting_inference.py \
 	--window_size 49 \
 	--overlap 10 \
 	--decode_chunk_size 4 \
-	--cpu_offload model
+	--cpu_offload model \
+	--save_depth True
 
-printf "\n\n=== STEP 2 ==="
+printf "\n\n=== STEP 2 ===\n"
 python -u s2_inpainting_inference.py \
 	--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
@@ -36,13 +37,26 @@ python -u s2_inpainting_inference.py \
 	--inpaint_scale 0.5 \
 	--inference_steps 5
 
-printf "\n=== STEP 3 ==="
-python -u s3_interpolation.py \
+printf "\n\n=== STEP 3 ===\n"
+python -u s3_greenscreen.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mp4" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_interp.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mp4" \
+	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
+	--enabled True
+
+printf "\n\n=== STEP 4 ===\n"
+python -u s4_interpolation.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_4_interp.mp4" \
 	--target_fps 45
 
-printf "\n\n=== STEP 4 ==="
-python -u s4_upscale.py \
-	--input_video_path "$OUTPUT_DIR/${BASENAME}_3_interp.mp4" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_4_upscale.mp4"
+printf "\n\n=== STEP 5 ===\n"
+python -u s5_upscale.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_4_interp.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4"
+
+printf "\n\n=== STEP 6 ===\n"
+python -u s6_green_cleanup.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_6_result.mp4" \
+	--enabled True

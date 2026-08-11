@@ -81,7 +81,6 @@ class DepthCrafterDemo:
             low_cpu_mem_usage=True,
             torch_dtype=torch.float16,
         )
-        # load weights of other components from the provided checkpoint
         self.pipe = DepthCrafterPipeline.from_pretrained(
             pre_trained_path,
             unet=unet,
@@ -89,7 +88,6 @@ class DepthCrafterDemo:
             variant="fp16",
         )
 
-        # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
         if isinstance(cpu_offload, str):
             cpu_offload = cpu_offload.lower()
             if cpu_offload in ["none", "cuda", "false"]:
@@ -97,7 +95,6 @@ class DepthCrafterDemo:
 
         if cpu_offload is not None:
             if cpu_offload == "sequential":
-                # This will slow, but save more memory
                 self.pipe.enable_sequential_cpu_offload()
             elif cpu_offload == "model":
                 self.pipe.enable_model_cpu_offload()
@@ -105,7 +102,6 @@ class DepthCrafterDemo:
                 raise ValueError(f"Unknown cpu offload option: {cpu_offload}")
         else:
             self.pipe.to("cuda")
-        # enable attention slicing and xformers memory efficient attention
         try:
             self.pipe.enable_xformers_memory_efficient_attention()
         except Exception as e:
@@ -141,7 +137,6 @@ class DepthCrafterDemo:
             dataset,
         )
 
-        # inference the depth map using the DepthCrafter pipeline
         print("==> running DepthCrafter depth inference", flush=True)
         with torch.inference_mode():
             res = self.pipe(
@@ -157,11 +152,9 @@ class DepthCrafterDemo:
                 decode_chunk_size=decode_chunk_size,
             ).frames[0]
 
-        # convert the three-channel output to a single channel depth map
         print("==> post-processing depth maps", flush=True)
         res = res.sum(-1) / res.shape[-1]
 
-        # resize the depth to the original size
         resized_res = []
         for i in range(0, len(res), decode_chunk_size):
             tensor_res = (
@@ -181,11 +174,8 @@ class DepthCrafterDemo:
             del tensor_res
         res = np.concatenate(resized_res, axis=0)
 
-        # normalize the depth map to [0, 1] across the whole video
         res = (res - res.min()) / (res.max() - res.min())
-        # visualize the depth map and save the results
         vis = vis_sequence_depth(res)
-        # save the depth map and visualization with the target FPS
         save_path = os.path.join(
             os.path.dirname(output_video_path),
             os.path.splitext(os.path.basename(output_video_path))[0],
@@ -232,16 +222,12 @@ class ForwardWarpStereo(nn.Module):
         """
         im = im.contiguous()
         disp = disp.contiguous()
-        # weights_map = torch.abs(disp)
         weights_map = disp - disp.min()
-        weights_map = (
-            1.414
-        ) ** weights_map  # using 1.414 instead of EXP for avoding numerical overflow.
+        weights_map = (1.414) ** weights_map
         flow = -disp.squeeze(1)
         dummy_flow = torch.zeros_like(flow, requires_grad=False)
         flow = torch.stack((flow, dummy_flow), dim=-1)
         res_accum = self.fw(im * weights_map, flow)
-        # mask = self.fw(weights_map, flow.detach())
         mask = self.fw(weights_map, flow)
         mask.clamp_(min=self.eps)
         res = res_accum / mask
@@ -295,7 +281,6 @@ def DepthSplatting(
     num_frames = len(input_frames)
     height, width, _ = input_frames[0].shape
 
-    # Initialize OpenCV VideoWriter
     out = cv2.VideoWriter(
         output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width * 2, height * 2)
     )
@@ -336,7 +321,6 @@ def DepthSplatting(
             video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
             out.write(video_grid_bgr)
 
-        # Free up GPU memory
         del left_video, disp_map, right_video, occlusion_mask
         torch.cuda.empty_cache()
         gc.collect()

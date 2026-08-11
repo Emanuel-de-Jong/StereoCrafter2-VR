@@ -191,8 +191,6 @@ def get_t5_prompt_embeds(
     tokenizer=None,
     text_encoder=None,
 ):
-    # device = device or self._execution_device
-    # dtype = dtype or self.text_encoder.dtype
 
     prompt = [prompt] if isinstance(prompt, str) else prompt
     prompt = [prompt_clean(u) for u in prompt]
@@ -223,7 +221,6 @@ def get_t5_prompt_embeds(
         dim=0,
     )
 
-    # duplicate text embeddings for each generation per prompt, using mps friendly method
     _, seq_len, _ = prompt_embeds.shape
     prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
     prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
@@ -270,7 +267,6 @@ def encode_prompt(
         dtype: (`torch.dtype`, *optional*):
             torch dtype
     """
-    # device = device or self._execution_device
 
     prompt = [prompt] if isinstance(prompt, str) else prompt
     if prompt is not None:
@@ -325,35 +321,18 @@ def encode_prompt(
 def prepare_masks(
     mask: torch.Tensor,
     reference_images=None,
-    # generator = None,
     transformer_patch_size=None,
     vae_scale_factor_temporal=None,
     vae_scale_factor_spatial=None,
 ) -> torch.Tensor:
-    # if isinstance(generator, list):
-    #     # TODO: support this
-    #     raise ValueError("Passing a list of generators is not yet supported. This may be supported in the future.")
 
     if reference_images is None:
-        # For each batch of video, we set no reference image (as one or more can be passed by user)
         reference_images = [[None] for _ in range(mask.shape[0])]
     else:
         if mask.shape[0] != len(reference_images):
             raise ValueError(
                 f"Batch size of `mask` {mask.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
             )
-
-    # if mask.shape[0] != 1:
-    #     # TODO: support this
-    #     raise ValueError(
-    #         "Generating with more than one video is not yet supported. This may be supported in the future."
-    #     )
-
-    # transformer_patch_size = (
-    #     self.transformer.config.patch_size[1]
-    #     if self.transformer is not None
-    #     else self.transformer_2.config.patch_size[1]
-    # )
 
     mask_list = []
     for mask_, reference_images_batch in zip(mask, reference_images):
@@ -379,9 +358,7 @@ def prepare_masks(
             new_width,
             vae_scale_factor_spatial,
         )
-        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(
-            0, 1
-        )  # [8x8, num_frames, new_height, new_width]
+        mask_ = mask_.permute(2, 4, 0, 1, 3).flatten(0, 1)
         mask_ = torch.nn.functional.interpolate(
             mask_.unsqueeze(0),
             size=(new_num_frames, new_height, new_width),
@@ -409,11 +386,6 @@ def preprocess_conditions(
     base=None,
 ):
     if video is not None:
-        # base = self.vae_scale_factor_spatial * (
-        #     self.transformer.config.patch_size[1]
-        #     if self.transformer is not None
-        #     else self.transformer_2.config.patch_size[1]
-        # )
         video_height, video_width = video_processor.get_default_height_width(video[0])
 
         if video_height * video_width > height * width:
@@ -423,9 +395,6 @@ def preprocess_conditions(
             )
 
         if video_height % base != 0 or video_width % base != 0:
-            # logger.warning(
-            #     f"Video height and width should be divisible by {base}, but got {video_height} and {video_width}. "
-            # )
             video_height = (video_height // base) * base
             video_width = (video_width // base) * base
 
@@ -435,12 +404,12 @@ def preprocess_conditions(
         image_size = (
             video_height,
             video_width,
-        )  # Use the height/width of video (with possible rescaling)
+        )
     else:
         video = torch.zeros(
             batch_size, 3, num_frames, height, width, dtype=dtype, device=device
         )
-        image_size = (height, width)  # Use the height/width provider by user
+        image_size = (height, width)
 
     if mask is not None:
         mask = video_processor.preprocess_video(mask, image_size[0], image_size[1])
@@ -451,8 +420,6 @@ def preprocess_conditions(
     video = video.to(dtype=dtype, device=device)
     mask = mask.to(dtype=dtype, device=device)
 
-    # Make a list of list of images where the outer list corresponds to video batch size and the inner list
-    # corresponds to list of conditioning images per video
     if reference_images is None or isinstance(reference_images, Image.Image):
         reference_images = [[reference_images] for _ in range(video.shape[0])]
     elif isinstance(reference_images, (list, tuple)) and isinstance(
@@ -500,9 +467,7 @@ def preprocess_conditions(
                 size=(new_height, new_width),
                 mode="bilinear",
                 align_corners=False,
-            ).squeeze(
-                0
-            )  # [C, H, W]
+            ).squeeze(0)
             top = (image_size[0] - new_height) // 2
             left = (image_size[1] - new_width) // 2
             canvas = torch.ones(3, *image_size, device=device, dtype=dtype)
@@ -520,27 +485,14 @@ def prepare_video_latents(
     device=None,
     vae=None,
 ) -> torch.Tensor:
-    # device = device or self._execution_device
-
-    # if isinstance(generator, list):
-    #     # TODO: support this
-    #     raise ValueError("Passing a list of generators is not yet supported. This may be supported in the future.")
 
     if reference_images is None:
-        # For each batch of video, we set no re
-        # ference image (as one or more can be passed by user)
         reference_images = [[None] for _ in range(video.shape[0])]
     else:
         if video.shape[0] != len(reference_images):
             raise ValueError(
                 f"Batch size of `video` {video.shape[0]} and length of `reference_images` {len(reference_images)} does not match."
             )
-
-    # if video.shape[0] != 1:
-    #     # TODO: support this
-    #     raise ValueError(
-    #         "Generating with more than one video is not yet supported. This may be supported in the future."
-    #     )
 
     vae_dtype = vae.dtype
     video = video.to(dtype=vae_dtype)
@@ -553,16 +505,13 @@ def prepare_video_latents(
     ).view(1, vae.config.z_dim, 1, 1, 1)
 
     if mask is None:
-        # latents = retrieve_latents(vae.encode(video), generator, sample_mode="argmax").unbind(0)
         latents = encode_vae_mode(vae, video)
         latents = ((latents.float() - latents_mean) * latents_std).to(vae_dtype)
     else:
         mask = torch.where(mask > 0.5, 1.0, 0.0).to(dtype=vae_dtype)
         inactive = video * (1 - mask)
         reactive = video * mask
-        # inactive = retrieve_latents(vae.encode(inactive), generator, sample_mode="argmax")
         inactive = encode_vae_mode(vae, inactive)
-        # reactive = retrieve_latents(vae.encode(reactive), generator, sample_mode="argmax")
         reactive = encode_vae_mode(vae, reactive)
         inactive = ((inactive.float() - latents_mean) * latents_std).to(vae_dtype)
         reactive = ((reactive.float() - latents_mean) * latents_std).to(vae_dtype)
@@ -573,13 +522,12 @@ def prepare_video_latents(
         for reference_image in reference_images_batch:
             assert reference_image.ndim == 3
             reference_image = reference_image.to(dtype=vae_dtype)
-            reference_image = reference_image[None, :, None, :, :]  # [1, C, 1, H, W]
-            # reference_latent = retrieve_latents(vae.encode(reference_image), generator, sample_mode="argmax")
+            reference_image = reference_image[None, :, None, :, :]
             reference_latent = vae.encode(reference_image).latent_dist.sample()
             reference_latent = (
                 (reference_latent.float() - latents_mean) * latents_std
             ).to(vae_dtype)
-            reference_latent = reference_latent.squeeze(0)  # [C, 1, H, W]
+            reference_latent = reference_latent.squeeze(0)
             reference_latent = torch.cat(
                 [reference_latent, torch.zeros_like(reference_latent)], dim=0
             )
@@ -625,7 +573,6 @@ def run_wan_pipeline(
     vae_cpu_offload="none",
 ):
     """封装单次 Wan 去噪 Pipeline 以供分块调用"""
-    # 此时进入的 cond_frames 是正确的 [B, C, F, H, W]
     height, width = cond_frames.shape[3], cond_frames.shape[4]
     num_frames = cond_frames.shape[2]
 
@@ -633,8 +580,6 @@ def run_wan_pipeline(
         vae.to(DEVICE)
 
     with torch.inference_mode():
-        # VideoProcessor 强制要求输入格式为 [B, F, C, H, W]
-        # 所以我们在这里做一次临时的维度翻转：[B, C, F, H, W] -> [B, F, C, H, W]
         cond_frames_vp = cond_frames.permute(0, 2, 1, 3, 4)
         mask_frames_vp = mask_frames.permute(0, 2, 1, 3, 4)
 
@@ -737,7 +682,6 @@ def spatial_tiled_process(
     height = cond_frames.shape[3]
     width = cond_frames.shape[4]
 
-    # 确保切块大小能够被 VAE 和 Transformer Patch 的乘积（通常是 16）整除
     base = vae_scale_factor_spatial * transformer_patch_size
     tile_size = (
         int((height + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
@@ -785,7 +729,6 @@ def spatial_tiled_process(
             cleanup_cuda()
         cols.append(rows)
 
-    # 映射回 Latent 空间的 stride 和 overlap
     latent_stride = (
         tile_stride[0] // vae_scale_factor_spatial,
         tile_stride[1] // vae_scale_factor_spatial,
@@ -795,7 +738,6 @@ def spatial_tiled_process(
         tile_overlap // vae_scale_factor_spatial,
     )
 
-    # 融合 Latents
     results_cols = []
     for i, rows in enumerate(cols):
         results_rows = []
@@ -1036,25 +978,19 @@ def main(
 
     print(f"Starting Temporal Chunking inference (Total Frames: {total_frames})...")
 
-    # 记录全局已经完美生成的有效帧数
     global_len = 0
 
     while global_len < total_frames:
         if global_len == 0:
-            # 第一段：从 0 开始
             cur_i = 0
             cur_chunk_size = min(frames_chunk, total_frames)
-            # 安全修正（防止输入视频本身不到 81 帧）
             valid_chunk_size = (
                 (cur_chunk_size - 1) // vae_scale_factor_temporal
             ) * vae_scale_factor_temporal + 1
         else:
-            # 正常步长推进
             cur_i = global_len - frames_overlap
 
-            # 如果按正常步长取，超出了总帧数，说明这是最后一段
             if cur_i + frames_chunk > total_frames:
-                # 强制把截取起点向前推，确保这一段刚好能取满 frames_chunk (81帧) 并直达视频结尾
                 cur_i = max(0, total_frames - frames_chunk)
 
             cur_chunk_size = min(frames_chunk, total_frames - cur_i)
@@ -1083,11 +1019,8 @@ def main(
 
         actual_overlap = 0
         if global_len > 0:
-            # 真实重叠长度 = 已生成的总进度 - 当前段的倒推起点
-            # (例如：已生成 81 帧，当前段为了凑 81 帧从第 9 帧开始取，那么重叠帧数就是 81 - 9 = 72 帧！)
             actual_overlap = global_len - cur_i
 
-            # 把已经生成的历史画面作为“绝对条件”覆盖到当前段的前面
             context = extract_video_context(generated_video_chunks, cur_i, global_len)
             if context is not None:
                 chunk_cond[:, :, :actual_overlap, :h_orig, :w_orig] = context.to(
@@ -1099,7 +1032,6 @@ def main(
             f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames..."
         )
 
-        # --- 空间分块推理 ---
         chunk_latents = spatial_tiled_process(
             chunk_cond,
             chunk_mask,
@@ -1116,7 +1048,6 @@ def main(
             vae_cpu_offload,
         )
 
-        # --- 解码当前分段 ---
         if vae_cpu_offload == "manual":
             vae.to(DEVICE)
 
@@ -1139,7 +1070,6 @@ def main(
 
         del chunk_latents, latents_mean, latents_std, chunk_cond, chunk_mask
 
-        # 保存并剔除重复片段
         if global_len == 0:
             if pad_h > 0 or pad_w > 0:
                 video_chunk_tensor = video_chunk_tensor[:, :, :, :h_orig, :w_orig]
@@ -1147,7 +1077,6 @@ def main(
             generated_left_chunks.append(frames_left.cpu())
             global_len += video_chunk_tensor.shape[2]
         else:
-            # 严格剔除历史重叠帧
             new_frames = video_chunk_tensor[:, :, actual_overlap:]
             new_left_frames = frames_left[:, :, actual_overlap:]
             if pad_h > 0 or pad_w > 0:
@@ -1160,29 +1089,24 @@ def main(
 
         cleanup_cuda()
 
-        # 保护机制：如果因为取整或视频极短导致无法前进，跳出避免死循环
         if global_len > 0 and actual_overlap >= valid_chunk_size:
             print(
                 "Warning: Chunk progression stuck due to temporal scaling limits. Exiting loop."
             )
             break
 
-    # 拼接所有时间分段
     final_video = torch.cat(generated_video_chunks, dim=2)
     frames_left = torch.cat(generated_left_chunks, dim=2)
 
     print("\nExporting final video...")
 
-    # 1. 取出 batch 0，形状变为 [C, F, H, W]
     video_tensor = final_video[0]
 
-    # 2. 转换为 numpy 并调整维度顺序为 [F, H, W, C]
     video_np = video_tensor.permute(1, 2, 3, 0).cpu().float().numpy()
     video_left_np = frames_left[0].permute(1, 2, 3, 0).cpu().float().numpy()
 
     frames_sbs = np.concatenate([video_left_np, video_np], axis=2)
     frames_sbs_frames_list = [frames_sbs[i] for i in range(frames_sbs.shape[0])]
-    # print(frames_sbs_frames_list[0].shape)
     export_to_video(frames_sbs_frames_list, frames_sbs_path, fps=int(fps))
 
     video_left_np[:, :, :, 1] = 0

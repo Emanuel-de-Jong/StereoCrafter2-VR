@@ -22,7 +22,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--unet_path ./weights/DepthCrafter \
 		--input_video_path "$video" \
 		--output_video_path "$output_file" \
-		--target_fps 30 \
+		--target_fps 15 \
 		--max_res 768 \
 		--window_size 49 \
 		--overlap 10 \
@@ -36,18 +36,24 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 		--input_video_path "$output_file" \
 		--save_dir "$OUTPUT_DIR" \
 		--tile_num 2 \
-		--frames_chunk 49 \
-		--frames_overlap 5 \
+		--frames_chunk 17 \
+		--frames_overlap 2 \
 		--transformer_dtype fp8 \
 		--transformer_cpu_offload none \
-		--vae_cpu_offload none \
+		--vae_cpu_offload manual \
 		--inpaint_scale 0.5 \
 		--inference_steps 6
 
 	printf "\n=== STEP 3 ==="
-	python -u s3_upscale.py \
+	python -u s3_interpolation.py \
 		--input_video_path "$OUTPUT_DIR/${basename}_2_sbs.mp4" \
-		--output_video_path "$OUTPUT_DIR/${basename}_3_upscale.mp4"
+		--output_video_path "$OUTPUT_DIR/${basename}_3_interp.mp4" \
+		--target_fps 30
+
+	printf "\n=== STEP 4 ==="
+	python -u s4_upscale.py \
+		--input_video_path "$OUTPUT_DIR/${basename}_3_interp.mp4" \
+		--output_video_path "$OUTPUT_DIR/${basename}_4_upscale.mp4"
 
 	printf "\n-----------------------------------\n"
 done

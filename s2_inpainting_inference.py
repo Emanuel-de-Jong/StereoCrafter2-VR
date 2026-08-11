@@ -900,7 +900,9 @@ def extract_video_context(video_chunks, start_frame, end_frame):
         overlap_end = min(end_frame, chunk_end)
         if overlap_start < overlap_end:
             context_chunks.append(
-                video_chunk[:, :, overlap_start - chunk_start : overlap_end - chunk_start]
+                video_chunk[
+                    :, :, overlap_start - chunk_start : overlap_end - chunk_start
+                ]
             )
         chunk_start = chunk_end
 
@@ -1055,7 +1057,9 @@ def main(
             print(
                 f"Padding chunk resolution from {w_orig}x{h_orig} to {w_orig + pad_w}x{h_orig + pad_h} to perfectly match Tiling output."
             )
-            chunk_cond, chunk_mask = pad_video_chunk(chunk_cond, chunk_mask, pad_h, pad_w)
+            chunk_cond, chunk_mask = pad_video_chunk(
+                chunk_cond, chunk_mask, pad_h, pad_w
+            )
 
         actual_overlap = 0
         if global_len > 0:

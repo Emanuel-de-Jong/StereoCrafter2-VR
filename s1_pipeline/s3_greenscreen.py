@@ -1,7 +1,6 @@
 import os
 import shutil
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -25,7 +24,10 @@ def main(
     output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
     depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
     enabled=True,
+    model_type="rvm",
     model_path="facebook/detr-resnet-50-panoptic",
+    rvm_model_path="resnet50",
+    rvm_downsample_ratio=0.25,
     foreground_classes="person",
     selection_mode="main_subject",
     green="0,255,0",
@@ -35,11 +37,13 @@ def main(
     max_segment_area=0.85,
     close_percentile=80.0,
     min_depth_component_area=0.005,
-    mask_feather=5,
-    mask_erode=0,
-    mask_dilate=2,
-    temporal_smoothing=0.75,
-    stereo_mask_mode="left",
+    mask_feather=15,
+    mask_erode=3,
+    mask_dilate=3,
+    temporal_smoothing=0.3,
+    stereo_mask_mode="depth",
+    max_disp=26,
+    max_disp_reference_width=1920,
     device="cuda",
     overwrite=False,
 ):
@@ -59,8 +63,11 @@ def main(
         shutil.copy2(input_video_path, output_video_path)
         return
 
+    model_type = model_type.lower()
+    if model_type not in ["detr", "rvm"]:
+        raise ValueError(f"Unknown model_type: {model_type}")
     stereo_mask_mode = stereo_mask_mode.lower()
-    if stereo_mask_mode not in ["left", "both", "union"]:
+    if stereo_mask_mode not in ["left", "both", "union", "depth"]:
         raise ValueError(f"Unknown stereo_mask_mode: {stereo_mask_mode}")
     selection_mode = selection_mode.lower()
     if selection_mode not in ["main_subject", "classes", "all_segments"]:
@@ -69,7 +76,16 @@ def main(
     green_color = parse_color(green)
     foreground_class_set = parse_classes(foreground_classes)
     depth_maps = load_depth_maps(depth_npz_path)
-    segmenter = create_segmenter(model_path, device)
+
+    if model_type == "rvm":
+        segmenter, rvm_device = create_rvm_model(rvm_model_path, device)
+        rvm_state_left = [None] * 4
+        rvm_state_right = [None] * 4
+    else:
+        segmenter = create_segmenter(model_path, device)
+        rvm_state_left = None
+        rvm_state_right = None
+        rvm_device = None
 
     video = cv2.VideoCapture(input_video_path)
     if not video.isOpened():
@@ -99,26 +115,18 @@ def main(
                 depth_maps[depth_index], left_frame.shape[0], left_frame.shape[1]
             )
 
-            left_mask = get_foreground_mask(
-                segmenter,
-                left_frame,
-                depth_frame,
-                foreground_class_set,
-                selection_mode,
-                threshold,
-                main_subject_score_ratio,
-                min_segment_area,
-                max_segment_area,
-                close_percentile,
-                min_depth_component_area,
-            )
-
-            if stereo_mask_mode == "left":
-                right_mask = left_mask.copy()
-            else:
-                right_mask = get_foreground_mask(
+            if model_type == "rvm":
+                left_mask, rvm_state_left = get_foreground_mask_rvm(
                     segmenter,
-                    right_frame,
+                    left_frame,
+                    rvm_state_left,
+                    rvm_device,
+                    rvm_downsample_ratio,
+                )
+            else:
+                left_mask = get_foreground_mask(
+                    segmenter,
+                    left_frame,
                     depth_frame,
                     foreground_class_set,
                     selection_mode,
@@ -129,6 +137,36 @@ def main(
                     close_percentile,
                     min_depth_component_area,
                 )
+
+            if stereo_mask_mode == "left":
+                right_mask = left_mask.copy()
+            elif stereo_mask_mode == "depth":
+                right_mask = project_mask_to_right_eye(
+                    left_mask, depth_frame, max_disp, max_disp_reference_width
+                )
+            else:
+                if model_type == "rvm":
+                    right_mask, rvm_state_right = get_foreground_mask_rvm(
+                        segmenter,
+                        right_frame,
+                        rvm_state_right,
+                        rvm_device,
+                        rvm_downsample_ratio,
+                    )
+                else:
+                    right_mask = get_foreground_mask(
+                        segmenter,
+                        right_frame,
+                        depth_frame,
+                        foreground_class_set,
+                        selection_mode,
+                        threshold,
+                        main_subject_score_ratio,
+                        min_segment_area,
+                        max_segment_area,
+                        close_percentile,
+                        min_depth_component_area,
+                    )
                 if stereo_mask_mode == "union":
                     union_mask = np.maximum(left_mask, right_mask)
                     left_mask = union_mask
@@ -220,6 +258,56 @@ def resize_depth(depth, height, width):
     return cv2.resize(depth, (width, height), interpolation=cv2.INTER_LINEAR).astype(
         np.float32
     )
+
+
+def project_mask_to_right_eye(
+    left_mask, depth_frame, max_disp, max_disp_reference_width
+):
+    height, width = left_mask.shape
+    effective_max_disp = max_disp * width / max_disp_reference_width
+    disp_pixels = (depth_frame * 2.0 - 1.0) * effective_max_disp
+
+    xs = np.arange(width, dtype=np.float32)
+    ys = np.arange(height, dtype=np.float32)
+    map_x, map_y = np.meshgrid(xs, ys)
+    map_x = np.clip(map_x + disp_pixels, 0.0, width - 1).astype(np.float32)
+
+    return cv2.remap(left_mask, map_x, map_y, cv2.INTER_LINEAR)
+
+
+def create_rvm_model(rvm_model_path, device):
+    if rvm_model_path in ("resnet50", "mobilenetv3"):
+        model = torch.hub.load(
+            "PeterL1n/RobustVideoMatting",
+            rvm_model_path,
+            trust_repo=True,
+        )
+    else:
+        arch = "mobilenetv3" if "mobilenet" in rvm_model_path.lower() else "resnet50"
+        model = torch.hub.load(
+            "PeterL1n/RobustVideoMatting",
+            arch,
+            pretrained=False,
+            trust_repo=True,
+        )
+        model.load_state_dict(torch.load(rvm_model_path, map_location="cpu"))
+
+    rvm_device = torch.device(
+        "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+    )
+    model = model.to(rvm_device).eval()
+    return model, rvm_device
+
+
+def get_foreground_mask_rvm(
+    model, frame_rgb, recurrent_state, device, downsample_ratio
+):
+    frame_tensor = (
+        torch.from_numpy(frame_rgb).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    )
+    with torch.no_grad():
+        _fgr, pha, *new_state = model(frame_tensor, *recurrent_state, downsample_ratio)
+    return pha.squeeze().cpu().numpy(), new_state
 
 
 def create_segmenter(model_path, device):
@@ -401,9 +489,6 @@ def process_mask(
 ):
     mask = np.clip(mask, 0.0, 1.0).astype(np.float32)
 
-    if previous_mask is not None and temporal_smoothing > 0.0:
-        mask = previous_mask * temporal_smoothing + mask * (1.0 - temporal_smoothing)
-
     if mask_erode > 0:
         kernel_size = mask_erode * 2 + 1
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
@@ -420,15 +505,26 @@ def process_mask(
             kernel_size += 1
         mask = cv2.GaussianBlur(mask, (kernel_size, kernel_size), 0)
 
+    if previous_mask is not None and temporal_smoothing > 0.0:
+        mask = previous_mask * temporal_smoothing + mask * (1.0 - temporal_smoothing)
+
     return np.clip(mask, 0.0, 1.0).astype(np.float32)
 
 
 def composite_green(frame_rgb, mask, green_color):
     alpha = mask[:, :, None]
+
+    spill_weight = np.clip(1.0 - alpha * 2.0, 0.0, 1.0)
+    suppressed = frame_rgb.copy()
+    suppressed[:, :, 1] = (
+        frame_rgb[:, :, 1] * (1.0 - spill_weight[:, :, 0])
+        + (frame_rgb[:, :, 0] + frame_rgb[:, :, 2]) * 0.5 * spill_weight[:, :, 0]
+    )
+
     green_frame = np.ones_like(frame_rgb, dtype=np.float32) * green_color.reshape(
         1, 1, 3
     )
-    return frame_rgb * alpha + green_frame * (1.0 - alpha)
+    return suppressed * alpha + green_frame * (1.0 - alpha)
 
 
 def split_sbs_frame(frame_rgb):

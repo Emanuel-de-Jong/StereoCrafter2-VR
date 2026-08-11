@@ -1,7 +1,8 @@
 #!/bin/bash
 
-BASENAME="vid"
-INPUT_DIR="./inputs"
+INPUT_VIDEO_PATH="${1:-./inputs/vid.mp4}"
+FILENAME=$(basename "$INPUT_VIDEO_PATH")
+BASENAME="${FILENAME%.*}"
 OUTPUT_DIR="./outputs"
 mkdir -p "$OUTPUT_DIR"
 
@@ -11,7 +12,7 @@ printf "=== STEP 1 ==="
 python -u s1_depth_splatting_inference.py \
 	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
 	--unet_path ./weights/DepthCrafter \
-	--input_video_path "$INPUT_DIR/$BASENAME.mp4" \
+	--input_video_path "$INPUT_VIDEO_PATH" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
 	--target_fps 15 \
 	--max_res 768 \
@@ -33,7 +34,7 @@ python -u s2_inpainting_inference.py \
 	--transformer_cpu_offload none \
 	--vae_cpu_offload manual \
 	--inpaint_scale 0.5 \
-	--inference_steps 6
+	--inference_steps 5
 
 printf "\n=== STEP 3 ==="
 python -u s3_interpolation.py \

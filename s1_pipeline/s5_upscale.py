@@ -11,7 +11,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import s0_utils.global_params as g
 from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
 
 
 def get_video_size(input_video_path):
@@ -113,9 +112,9 @@ def main(
     realesrgan_model: str = "realesr-animevideov3",
     gpu: int = 0,
     overwrite: bool = False,
-) -> StepResult:
+):
     if should_skip_output(output_video_path, overwrite):
-        return StepResult(output_video_path, skipped=True)
+        return
 
     if not os.path.isfile(input_video_path):
         raise FileNotFoundError(f"Input video not found: {input_video_path}")
@@ -200,8 +199,6 @@ def main(
     for temp_path in temp_paths:
         if os.path.exists(temp_path) and temp_path != output_video_path:
             os.remove(temp_path)
-
-    return StepResult(output_video_path)
 
 
 if __name__ == "__main__":

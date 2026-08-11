@@ -12,7 +12,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import s0_utils.global_params as g
 from s0_utils.helpers import cleanup_cuda, should_skip_output
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
 
 from diffusers.utils import export_to_video
 from PIL import Image
@@ -948,7 +947,7 @@ def main(
     vae_cpu_offload: str = "manual",
     seed: int = 0,
     overwrite: bool = False,
-) -> StepResult:
+):
     frames_sbs_path, vid_anaglyph_path = get_inpainting_output_paths(
         input_video_path, output_path, output_video_path, anaglyph_video_path
     )
@@ -965,7 +964,7 @@ def main(
     os.makedirs(os.path.dirname(vid_anaglyph_path) or ".", exist_ok=True)
 
     if should_skip_output(frames_sbs_path, overwrite):
-        return StepResult(frames_sbs_path, extra_paths, skipped=True)
+        return
 
     tokenizer = AutoTokenizer.from_pretrained(pre_trained_path, subfolder="tokenizer")
     text_encoder = UMT5EncoderModel.from_pretrained(
@@ -1195,6 +1194,6 @@ def main(
 
     export_to_video(vid_anaglyph_frames_list, vid_anaglyph_path, fps=int(fps))
 
-    return StepResult(frames_sbs_path, extra_paths)
+
 if __name__ == "__main__":
     Fire(monitor_step("Step 2 - Inpainting")(main))

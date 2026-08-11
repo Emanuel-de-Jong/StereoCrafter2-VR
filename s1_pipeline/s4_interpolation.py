@@ -12,7 +12,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import s0_utils.global_params as g
 from s0_utils.helpers import run_command, should_skip_output
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
 
 
 def get_video_fps(input_video_path):
@@ -104,9 +103,9 @@ def main(
     crf: int = 16,
     preset: str = "medium",
     overwrite: bool = False,
-) -> StepResult:
+):
     if should_skip_output(output_video_path, overwrite):
-        return StepResult(output_video_path, skipped=True)
+        return
 
     if not os.path.isfile(input_video_path):
         raise FileNotFoundError(f"Input video not found: {input_video_path}")
@@ -126,7 +125,7 @@ def main(
     if input_fps >= target_fps:
         print("Input FPS is already at or above target FPS, copying video.", flush=True)
         shutil.copy2(input_video_path, output_video_path)
-        return StepResult(output_video_path)
+        return
 
     print(f"RIFE model: {rife_model}", flush=True)
     print(f"Frame rate multiplier: {frame_rate_multiplier}x", flush=True)
@@ -141,7 +140,7 @@ def main(
             gpu,
             scene_thresh,
         )
-        return StepResult(output_video_path)
+        return
 
     temp_output_path = os.path.join(
         os.path.dirname(output_video_path) or ".",
@@ -168,8 +167,6 @@ def main(
     finally:
         if os.path.exists(temp_output_path):
             os.remove(temp_output_path)
-
-    return StepResult(output_video_path)
 
 
 if __name__ == "__main__":

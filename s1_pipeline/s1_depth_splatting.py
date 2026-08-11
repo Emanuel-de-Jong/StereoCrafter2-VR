@@ -17,9 +17,10 @@ from decord import VideoReader, cpu
 import s0_utils.global_params as g
 from s0_utils.helpers import cleanup_cuda, should_skip_output
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
 
-from dependencies.DepthCrafter.depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
+from dependencies.DepthCrafter.depthcrafter.depth_crafter_ppl import (
+    DepthCrafterPipeline,
+)
 from dependencies.DepthCrafter.depthcrafter.unet import (
     DiffusersUNetSpatioTemporalConditionModelDepthCrafter,
 )
@@ -375,11 +376,11 @@ def main(
     save_depth: bool = True,
     decode_chunk_size: int = 4,
     overwrite: bool = False,
-) -> StepResult:
+):
     extra_paths = get_depth_artifact_paths(output_video_path)
 
     if should_skip_output(output_video_path, overwrite):
-        return StepResult(output_video_path, extra_paths, skipped=True)
+        return
 
     depthcrafter_demo = DepthCrafterDemo(
         unet_path=unet_path,
@@ -419,8 +420,6 @@ def main(
         batch_size,
         target_fps,
     )
-
-    return StepResult(output_video_path, extra_paths)
 
 
 if __name__ == "__main__":

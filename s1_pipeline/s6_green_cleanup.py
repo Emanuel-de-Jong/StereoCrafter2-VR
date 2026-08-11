@@ -18,7 +18,6 @@ from s0_utils.helpers import (
     should_skip_output,
 )
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
 
 
 def parse_color(color, dtype=np.float32, normalize=True):
@@ -153,13 +152,13 @@ def main(
     write_metadata: bool = True,
     metadata_items: str = "",
     overwrite: bool = False,
-) -> StepResult:
+):
     enabled = parse_bool(enabled)
     write_metadata = parse_bool(write_metadata)
     overwrite = parse_bool(overwrite)
 
     if should_skip_output(output_video_path, overwrite):
-        return StepResult(output_video_path, skipped=True)
+        return
 
     if not os.path.isfile(input_video_path):
         raise FileNotFoundError(f"Input video not found: {input_video_path}")
@@ -169,7 +168,7 @@ def main(
     if not enabled:
         print("==> green cleanup disabled, copying input video", flush=True)
         shutil.copy2(input_video_path, output_video_path)
-        return StepResult(output_video_path)
+        return
 
     green_color = parse_color(green, dtype=np.uint8, normalize=False)
     video = cv2.VideoCapture(input_video_path)
@@ -212,7 +211,6 @@ def main(
         write_mp4_metadata(output_video_path, green_color, metadata_items)
 
     print(f"==> saved green-cleaned video: {output_video_path}", flush=True)
-    return StepResult(output_video_path)
 
 
 if __name__ == "__main__":

@@ -14,13 +14,36 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import s0_utils.global_params as g
 from s0_utils.helpers import (
-    get_video_properties,
     parse_bool,
-    parse_color,
     should_skip_output,
 )
 from s0_utils.monitor import monitor_step
-from s1_pipeline.step_contracts import StepResult
+
+
+def parse_color(color, dtype=np.float32, normalize=True):
+    values = [int(value.strip()) for value in color.split(",")]
+    if len(values) != 3:
+        raise ValueError(f"Expected color as R,G,B, got: {color}")
+    if any(value < 0 or value > 255 for value in values):
+        raise ValueError(f"Color values must be between 0 and 255, got: {color}")
+
+    color_array = np.array(values, dtype=dtype)
+    if normalize:
+        color_array = color_array / 255.0
+    return color_array
+
+
+def get_video_properties(video):
+    fps = video.get(cv2.CAP_PROP_FPS)
+    width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    if fps <= 0:
+        raise ValueError("Could not read video FPS")
+    if width <= 0 or height <= 0:
+        raise ValueError("Could not read video size")
+
+    return fps, width, height
 
 
 def parse_classes(foreground_classes):
@@ -268,67 +291,64 @@ def split_sbs_frame(frame_rgb):
     return frame_rgb[:, :half_width], frame_rgb[:, half_width:]
 
 
-@dataclass
-class GreenscreenConfig:
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_2_sbs.mp4")
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4")
-    depth_npz_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.npz")
-    enabled: bool = g.GREENSCREEN_ENABLED
-    model_path: str = "facebook/detr-resnet-50-panoptic"
-    foreground_classes: str = "person"
-    selection_mode: str = "main_subject"
-    green: str = "0,255,0"
-    threshold: float = 0.5
-    main_subject_score_ratio: float = 0.65
-    min_segment_area: float = 0.01
-    max_segment_area: float = 0.85
-    close_percentile: float = 80.0
-    min_depth_component_area: float = 0.005
-    mask_feather: int = 5
-    mask_erode: int = 0
-    mask_dilate: int = 2
-    temporal_smoothing: float = 0.75
-    stereo_mask_mode: str = "left"
-    device: str = "cuda"
-    overwrite: bool = False
+def main(
+    input_video_path=str(g.OUTPUTS_DIR / "vid_2_sbs.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
+    depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
+    enabled=True,
+    model_path="facebook/detr-resnet-50-panoptic",
+    foreground_classes="person",
+    selection_mode="main_subject",
+    green="0,255,0",
+    threshold=0.5,
+    main_subject_score_ratio=0.65,
+    min_segment_area=0.01,
+    max_segment_area=0.85,
+    close_percentile=80.0,
+    min_depth_component_area=0.005,
+    mask_feather=5,
+    mask_erode=0,
+    mask_dilate=2,
+    temporal_smoothing=0.75,
+    stereo_mask_mode="left",
+    device="cuda",
+    overwrite=False,
+):
+    enabled = parse_bool(enabled)
+    overwrite = parse_bool(overwrite)
 
+    if should_skip_output(output_video_path, overwrite):
+        return
 
-def run(config: GreenscreenConfig) -> StepResult:
-    enabled = parse_bool(config.enabled)
-    overwrite = parse_bool(config.overwrite)
+    if not os.path.isfile(input_video_path):
+        raise FileNotFoundError(f"Input video not found: {input_video_path}")
 
-    if should_skip_output(config.output_video_path, overwrite):
-        return StepResult(config.output_video_path, skipped=True)
-
-    if not os.path.isfile(config.input_video_path):
-        raise FileNotFoundError(f"Input video not found: {config.input_video_path}")
-
-    os.makedirs(os.path.dirname(config.output_video_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
 
     if not enabled:
         print("==> green screen disabled, copying input video", flush=True)
-        shutil.copy2(config.input_video_path, config.output_video_path)
-        return StepResult(config.output_video_path)
+        shutil.copy2(input_video_path, output_video_path)
+        return
 
-    stereo_mask_mode = config.stereo_mask_mode.lower()
+    stereo_mask_mode = stereo_mask_mode.lower()
     if stereo_mask_mode not in ["left", "both", "union"]:
         raise ValueError(f"Unknown stereo_mask_mode: {stereo_mask_mode}")
-    selection_mode = config.selection_mode.lower()
+    selection_mode = selection_mode.lower()
     if selection_mode not in ["main_subject", "classes", "all_segments"]:
         raise ValueError(f"Unknown selection_mode: {selection_mode}")
 
-    green_color = parse_color(config.green)
-    foreground_class_set = parse_classes(config.foreground_classes)
-    depth_maps = load_depth_maps(config.depth_npz_path)
-    segmenter = create_segmenter(config.model_path, config.device)
+    green_color = parse_color(green)
+    foreground_class_set = parse_classes(foreground_classes)
+    depth_maps = load_depth_maps(depth_npz_path)
+    segmenter = create_segmenter(model_path, device)
 
-    video = cv2.VideoCapture(config.input_video_path)
+    video = cv2.VideoCapture(input_video_path)
     if not video.isOpened():
-        raise ValueError(f"Could not open video: {config.input_video_path}")
+        raise ValueError(f"Could not open video: {input_video_path}")
 
     fps, width, height = get_video_properties(video)
     writer = cv2.VideoWriter(
-        config.output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
     )
 
     previous_left_mask = None
@@ -356,12 +376,12 @@ def run(config: GreenscreenConfig) -> StepResult:
                 depth_frame,
                 foreground_class_set,
                 selection_mode,
-                config.threshold,
-                config.main_subject_score_ratio,
-                config.min_segment_area,
-                config.max_segment_area,
-                config.close_percentile,
-                config.min_depth_component_area,
+                threshold,
+                main_subject_score_ratio,
+                min_segment_area,
+                max_segment_area,
+                close_percentile,
+                min_depth_component_area,
             )
 
             if stereo_mask_mode == "left":
@@ -373,12 +393,12 @@ def run(config: GreenscreenConfig) -> StepResult:
                     depth_frame,
                     foreground_class_set,
                     selection_mode,
-                    config.threshold,
-                    config.main_subject_score_ratio,
-                    config.min_segment_area,
-                    config.max_segment_area,
-                    config.close_percentile,
-                    config.min_depth_component_area,
+                    threshold,
+                    main_subject_score_ratio,
+                    min_segment_area,
+                    max_segment_area,
+                    close_percentile,
+                    min_depth_component_area,
                 )
                 if stereo_mask_mode == "union":
                     union_mask = np.maximum(left_mask, right_mask)
@@ -388,18 +408,18 @@ def run(config: GreenscreenConfig) -> StepResult:
             left_mask = process_mask(
                 left_mask,
                 previous_left_mask,
-                config.temporal_smoothing,
-                config.mask_erode,
-                config.mask_dilate,
-                config.mask_feather,
+                temporal_smoothing,
+                mask_erode,
+                mask_dilate,
+                mask_feather,
             )
             right_mask = process_mask(
                 right_mask,
                 previous_right_mask,
-                config.temporal_smoothing,
-                config.mask_erode,
-                config.mask_dilate,
-                config.mask_feather,
+                temporal_smoothing,
+                mask_erode,
+                mask_dilate,
+                mask_feather,
             )
 
             left_output = composite_green(left_frame, left_mask, green_color)
@@ -417,57 +437,7 @@ def run(config: GreenscreenConfig) -> StepResult:
         video.release()
         writer.release()
 
-    print(f"==> saved green-screen video: {config.output_video_path}", flush=True)
-    return StepResult(config.output_video_path)
-
-
-def main(
-    input_video_path=str(g.OUTPUTS_DIR / "vid_2_sbs.mp4"),
-    output_video_path=str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
-    depth_npz_path=str(g.OUTPUTS_DIR / "vid_1_splatting.npz"),
-    enabled=g.GREENSCREEN_ENABLED,
-    model_path="facebook/detr-resnet-50-panoptic",
-    foreground_classes="person",
-    selection_mode="main_subject",
-    green="0,255,0",
-    threshold=0.5,
-    main_subject_score_ratio=0.65,
-    min_segment_area=0.01,
-    max_segment_area=0.85,
-    close_percentile=80.0,
-    min_depth_component_area=0.005,
-    mask_feather=5,
-    mask_erode=0,
-    mask_dilate=2,
-    temporal_smoothing=0.75,
-    stereo_mask_mode="left",
-    device="cuda",
-    overwrite=False,
-):
-    config = GreenscreenConfig(
-        input_video_path=input_video_path,
-        output_video_path=output_video_path,
-        depth_npz_path=depth_npz_path,
-        enabled=enabled,
-        model_path=model_path,
-        foreground_classes=foreground_classes,
-        selection_mode=selection_mode,
-        green=green,
-        threshold=threshold,
-        main_subject_score_ratio=main_subject_score_ratio,
-        min_segment_area=min_segment_area,
-        max_segment_area=max_segment_area,
-        close_percentile=close_percentile,
-        min_depth_component_area=min_depth_component_area,
-        mask_feather=mask_feather,
-        mask_erode=mask_erode,
-        mask_dilate=mask_dilate,
-        temporal_smoothing=temporal_smoothing,
-        stereo_mask_mode=stereo_mask_mode,
-        device=device,
-        overwrite=overwrite,
-    )
-    return run(config)
+    print(f"==> saved green-screen video: {output_video_path}", flush=True)
 
 
 if __name__ == "__main__":

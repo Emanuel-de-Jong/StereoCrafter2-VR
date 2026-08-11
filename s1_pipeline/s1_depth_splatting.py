@@ -55,6 +55,9 @@ def main(
     scene_cut_threshold: float = 0.22,
     mask_dilation: int = 2,
     depth_edge_threshold: float = 0.03,
+    depth_dilation: int = 0,
+    depth_blur: int = 2,
+    convergence: float = 0.5,
     overwrite: bool = False,
 ):
     if should_skip_output(output_video_path, overwrite):
@@ -102,6 +105,9 @@ def main(
         target_fps,
         mask_dilation,
         depth_edge_threshold,
+        depth_dilation,
+        depth_blur,
+        convergence,
     )
 
 
@@ -345,6 +351,38 @@ def write_rgb_video(video_path, frames, fps):
     video_writer.release()
 
 
+def preprocess_depth(batch_depth, depth_dilation, depth_blur, depth_edge_threshold):
+    if depth_dilation <= 0 and depth_blur <= 0:
+        return batch_depth
+
+    processed_frames = []
+    for depth_frame in batch_depth:
+        depth_frame = depth_frame.astype(np.float32)
+        if depth_dilation > 0:
+            dilation_kernel = np.ones(
+                (depth_dilation * 2 + 1, depth_dilation * 2 + 1), np.uint8
+            )
+            depth_frame = cv2.dilate(depth_frame, dilation_kernel)
+        if depth_blur > 0:
+            blur_kernel = depth_blur * 2 + 1
+            blurred_frame = cv2.GaussianBlur(depth_frame, (blur_kernel, blur_kernel), 0)
+            if depth_edge_threshold > 0:
+                gradient_x = cv2.Sobel(depth_frame, cv2.CV_32F, 1, 0, ksize=3)
+                gradient_y = cv2.Sobel(depth_frame, cv2.CV_32F, 0, 1, ksize=3)
+                edge_magnitude = cv2.magnitude(gradient_x, gradient_y)
+                edge_mask = (edge_magnitude > depth_edge_threshold).astype(np.float32)
+                edge_mask = cv2.dilate(
+                    edge_mask, np.ones((blur_kernel, blur_kernel), np.uint8)
+                )
+                edge_mask = cv2.GaussianBlur(edge_mask, (blur_kernel, blur_kernel), 0)
+                depth_frame = depth_frame * (1.0 - edge_mask) + blurred_frame * edge_mask
+            else:
+                depth_frame = blurred_frame
+        processed_frames.append(depth_frame)
+
+    return np.stack(processed_frames).astype(np.float32)
+
+
 class ForwardWarpStereo(nn.Module):
     def __init__(self, eps=1e-6, occlu_map=False):
         super(ForwardWarpStereo, self).__init__()
@@ -385,6 +423,9 @@ def DepthSplatting(
     target_fps,
     mask_dilation,
     depth_edge_threshold,
+    depth_dilation,
+    depth_blur,
+    convergence,
 ):
     print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
@@ -425,10 +466,13 @@ def DepthSplatting(
             vid_reader.get_batch(batch_indices).asnumpy().astype("float32") / 255.0
         )
         batch_depth = video_depth[i : i + batch_size]
+        batch_depth = preprocess_depth(
+            batch_depth, depth_dilation, depth_blur, depth_edge_threshold
+        )
         left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
         disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
 
-        disp_map = disp_map * 2.0 - 1.0
+        disp_map = (disp_map - convergence) * 2.0
         disp_map = disp_map * effective_max_disp
 
         with torch.no_grad():

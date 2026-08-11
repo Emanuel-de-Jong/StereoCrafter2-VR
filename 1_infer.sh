@@ -30,7 +30,9 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--window_size 56 \
 	--overlap 16 \
 	--decode_chunk_size 8 \
-	--cpu_offload model
+	--cpu_offload model \
+	--depth_blur 2 \
+	--convergence 0.5
 
 printf "\n\n=== STEP 2: STEREO INPAINTING ===\n"
 python -u s1_pipeline/s2_inpainting.py \
@@ -43,12 +45,12 @@ python -u s1_pipeline/s2_inpainting.py \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
 	--tile_num 2 \
 	--frames_chunk 25 \
-	--frames_overlap 4 \
+	--frames_overlap 6 \
 	--transformer_dtype fp8 \
 	--transformer_cpu_offload none \
 	--vae_cpu_offload manual \
 	--inpaint_scale 1.0 \
-	--inference_steps 5
+	--inference_steps 7
 
 printf "\n\n=== STEP 3: GREENSCREEN ===\n"
 python -u s1_pipeline/s3_greenscreen.py \
@@ -66,7 +68,8 @@ python -u s1_pipeline/s4_interpolation.py \
 printf "\n\n=== STEP 5: UPSCALE ===\n"
 python -u s1_pipeline/s5_upscale.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_4_interp.mp4" \
-	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4"
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
+	--realesrgan_model realesr-animevideov3
 
 printf "\n\n=== STEP 6: GREEN CLEANUP ===\n"
 python -u s1_pipeline/s6_green_cleanup.py \

@@ -19,12 +19,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 printf "=== STEP 1: DEPTH SPLATTING ===\n"
 python -u s1_pipeline/s1_depth_splatting.py \
-	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
-	--unet_path ./weights/DepthCrafter \
 	--input_video_path "$INPUT_VIDEO_PATH" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
-	--max_disp 26 \
+	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
+	--unet_path ./weights/DepthCrafter \
 	--target_fps 15 \
+	--max_disp 26 \
 	--max_res 768 \
 	--window_size 49 \
 	--overlap 10 \
@@ -33,10 +33,12 @@ python -u s1_pipeline/s1_depth_splatting.py \
 
 printf "\n\n=== STEP 2: STEREO INPAINTING ===\n"
 python -u s1_pipeline/s2_inpainting.py \
+	--input_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
+	--output_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mp4" \
+	--anaglyph_video_path "$OUTPUT_DIR/${BASENAME}_2_anaglyph.mp4" \
+	--output_path "$OUTPUT_DIR" \
 	--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
-	--input_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mp4" \
-	--save_dir "$OUTPUT_DIR" \
 	--tile_num 2 \
 	--frames_chunk 17 \
 	--frames_overlap 2 \

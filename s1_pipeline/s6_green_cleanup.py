@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -20,6 +21,7 @@ from s0_utils.helpers import (
     should_skip_output,
 )
 from s0_utils.monitor import monitor_step
+from s1_pipeline.step_contracts import StepResult
 
 
 def get_green_cleanup_mask(frame_rgb, green_color, rgb_tolerance, green_dominance):
@@ -118,42 +120,45 @@ def write_mp4_metadata(video_path, green_color, metadata_items):
             os.remove(temp_output_path)
 
 
-def main(
-    input_video_path=str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
-    output_video_path=str(g.OUTPUTS_DIR / "vid_6_result.mp4"),
-    enabled=g.GREEN_CLEANUP_ENABLED,
-    green="0,255,0",
-    rgb_tolerance=48.0,
-    green_dominance=32.0,
-    write_metadata=True,
-    metadata_items="",
-    overwrite=False,
-):
-    enabled = parse_bool(enabled)
-    write_metadata = parse_bool(write_metadata)
-    overwrite = parse_bool(overwrite)
+@dataclass
+class GreenCleanupConfig:
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_5_upscale.mp4")
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_6_result.mp4")
+    enabled: bool = g.GREEN_CLEANUP_ENABLED
+    green: str = "0,255,0"
+    rgb_tolerance: float = 48.0
+    green_dominance: float = 32.0
+    write_metadata: bool = True
+    metadata_items: str = ""
+    overwrite: bool = False
 
-    if should_skip_output(output_video_path, overwrite):
-        return
 
-    if not os.path.isfile(input_video_path):
-        raise FileNotFoundError(f"Input video not found: {input_video_path}")
+def run(config: GreenCleanupConfig) -> StepResult:
+    enabled = parse_bool(config.enabled)
+    write_metadata = parse_bool(config.write_metadata)
+    overwrite = parse_bool(config.overwrite)
 
-    os.makedirs(os.path.dirname(output_video_path) or ".", exist_ok=True)
+    if should_skip_output(config.output_video_path, overwrite):
+        return StepResult(config.output_video_path, skipped=True)
+
+    if not os.path.isfile(config.input_video_path):
+        raise FileNotFoundError(f"Input video not found: {config.input_video_path}")
+
+    os.makedirs(os.path.dirname(config.output_video_path) or ".", exist_ok=True)
 
     if not enabled:
         print("==> green cleanup disabled, copying input video", flush=True)
-        shutil.copy2(input_video_path, output_video_path)
-        return
+        shutil.copy2(config.input_video_path, config.output_video_path)
+        return StepResult(config.output_video_path)
 
-    green_color = parse_color(green, dtype=np.uint8, normalize=False)
-    video = cv2.VideoCapture(input_video_path)
+    green_color = parse_color(config.green, dtype=np.uint8, normalize=False)
+    video = cv2.VideoCapture(config.input_video_path)
     if not video.isOpened():
-        raise ValueError(f"Could not open video: {input_video_path}")
+        raise ValueError(f"Could not open video: {config.input_video_path}")
 
     fps, width, height = get_video_properties(video)
     writer = cv2.VideoWriter(
-        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+        config.output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
     )
 
     frame_index = 0
@@ -166,7 +171,10 @@ def main(
 
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             cleanup_mask = get_green_cleanup_mask(
-                frame_rgb, green_color, rgb_tolerance, green_dominance
+                frame_rgb,
+                green_color,
+                config.rgb_tolerance,
+                config.green_dominance,
             )
             frame_rgb[cleanup_mask] = green_color
 
@@ -181,9 +189,35 @@ def main(
 
     if write_metadata:
         print("==> writing chroma-key metadata", flush=True)
-        write_mp4_metadata(output_video_path, green_color, metadata_items)
+        write_mp4_metadata(config.output_video_path, green_color, config.metadata_items)
 
-    print(f"==> saved green-cleaned video: {output_video_path}", flush=True)
+    print(f"==> saved green-cleaned video: {config.output_video_path}", flush=True)
+    return StepResult(config.output_video_path)
+
+
+def main(
+    input_video_path=str(g.OUTPUTS_DIR / "vid_5_upscale.mp4"),
+    output_video_path=str(g.OUTPUTS_DIR / "vid_6_result.mp4"),
+    enabled=g.GREEN_CLEANUP_ENABLED,
+    green="0,255,0",
+    rgb_tolerance=48.0,
+    green_dominance=32.0,
+    write_metadata=True,
+    metadata_items="",
+    overwrite=False,
+):
+    config = GreenCleanupConfig(
+        input_video_path=input_video_path,
+        output_video_path=output_video_path,
+        enabled=enabled,
+        green=green,
+        rgb_tolerance=rgb_tolerance,
+        green_dominance=green_dominance,
+        write_metadata=write_metadata,
+        metadata_items=metadata_items,
+        overwrite=overwrite,
+    )
+    return run(config)
 
 
 if __name__ == "__main__":

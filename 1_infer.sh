@@ -1,10 +1,10 @@
 #!/bin/bash
 
 CONVERT_START_SECONDS=$(date +%s)
-INPUT_VIDEO_PATH="${1:-./inputs/vid.mp4}"
+INPUT_VIDEO_PATH="${1:-./in/vid.mp4}"
 FILENAME=$(basename "$INPUT_VIDEO_PATH")
 BASENAME="${FILENAME%.*}"
-OUTPUT_DIR="./outputs"
+OUTPUT_DIR="./out"
 mkdir -p "$OUTPUT_DIR"
 
 format_duration() {
@@ -51,7 +51,7 @@ python -u s1_pipeline/s3_greenscreen.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mp4" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_3_greenscreen.mp4" \
 	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
-	--enabled True
+	--enabled False
 
 printf "\n\n=== STEP 4: INTERPOLATION ===\n"
 python -u s1_pipeline/s4_interpolation.py \
@@ -68,7 +68,7 @@ printf "\n\n=== STEP 6: GREEN CLEANUP ===\n"
 python -u s1_pipeline/s6_green_cleanup.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_5_upscale.mp4" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_6_result.mp4" \
-	--enabled True
+	--enabled False
 
 CONVERT_END_SECONDS=$(date +%s)
 CONVERT_DURATION_SECONDS=$((CONVERT_END_SECONDS - CONVERT_START_SECONDS))

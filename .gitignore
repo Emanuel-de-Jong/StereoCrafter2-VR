@@ -1,9 +1,10 @@
 .DS_Store
+*.log
 prompt*.txt
 prompt*.md
 __pycache__/
-inputs/*
-outputs/*
+in/*
+out/*
 weights/*
 dependency/realesrgan-ncnn-vulkan-v0.2.0-ubuntu
 dependency/Video2X

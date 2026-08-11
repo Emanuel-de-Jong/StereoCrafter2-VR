@@ -1,6 +1,6 @@
 #!/bin/bash
 
-INPUT_DIR="./inputs"
+INPUT_DIR="./in"
 
 shopt -s nullglob
 
@@ -9,6 +9,6 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 	[ -e "$video" ] || continue
 
 	printf "=== BATCH INPUT: %s ===\n" "$video"
-	./run_inference.sh "$video"
+	./1_infer.sh "$video"
 	printf "\n\n-----------------------------------\n\n"
 done

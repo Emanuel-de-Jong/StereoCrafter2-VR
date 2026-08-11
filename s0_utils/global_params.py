@@ -2,8 +2,8 @@ from pathlib import Path
 
 BASE_PATH = Path(__file__).resolve().parent.parent
 
-INPUTS_DIR = BASE_PATH / "inputs"
-OUTPUTS_DIR = BASE_PATH / "outputs"
+INPUTS_DIR = BASE_PATH / "in"
+OUTPUTS_DIR = BASE_PATH / "out"
 WEIGHTS_DIR = BASE_PATH / "weights"
 DEPENDENCY_DIR = BASE_PATH / "dependency"
 

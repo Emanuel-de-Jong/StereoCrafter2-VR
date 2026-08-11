@@ -6,8 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# from torchvision.io import write_video
-
 from diffusers.training_utils import set_seed
 from fire import Fire
 from decord import VideoReader, cpu
@@ -187,9 +185,26 @@ class DepthCrafterDemo:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         if save_depth:
             np.savez_compressed(save_path + ".npz", depth=res)
-            # write_video(save_path + "_depth_vis.mp4", vis*255.0, fps=target_fps, video_codec="h264", options={"crf": "16"})
+            write_rgb_video(save_path + "_depth_vis.mp4", vis, target_fps)
 
         return res, vis
+
+
+def write_rgb_video(video_path, frames, fps):
+    frames_uint8 = np.clip(frames, 0.0, 255.0)
+    if frames_uint8.max() <= 1.0:
+        frames_uint8 = frames_uint8 * 255.0
+    frames_uint8 = frames_uint8.astype(np.uint8)
+
+    height, width = frames_uint8.shape[1:3]
+    video_writer = cv2.VideoWriter(
+        video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    )
+
+    for frame in frames_uint8:
+        video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+    video_writer.release()
 
 
 class ForwardWarpStereo(nn.Module):

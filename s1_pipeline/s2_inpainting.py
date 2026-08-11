@@ -38,17 +38,17 @@ def main(
     output_video_path: str | None = None,
     anaglyph_video_path: str | None = None,
     frames_chunk: int = 25,
-    frames_overlap: int = 8,
+    frames_overlap: int = 4,
     tile_overlap: int = 128,
-    tile_num: int = 3,
-    inference_steps: int = 10,
+    tile_num: int = 2,
+    inference_steps: int = 5,
     inpaint_scale: float = 1.0,
     transformer_dtype: str = "fp8",
     transformer_cpu_offload: str = "none",
     vae_cpu_offload: str = "manual",
     scene_cut_threshold: float = 0.22,
-    output_crf: int = g.ENCODE_CRF,
-    output_preset: str = g.ENCODE_PRESET,
+    output_crf: int = 16,
+    output_preset: str = "medium",
     seed: int = 0,
     overwrite: bool = False,
 ):
@@ -124,12 +124,16 @@ def main(
     source_video_reader = VideoReader(source_video_path, ctx=cpu(0))
     fps = video_reader.get_avg_fps()
     source_fps = source_video_reader.get_avg_fps()
-    total_frames = min(len(video_reader), len(source_video_reader))
+    total_frames = len(video_reader)
 
-    if abs(fps - source_fps) > 0.01:
+    if fps <= 0 or source_fps <= 0:
         raise ValueError(
-            f"Condition and source FPS do not match: {fps:.3f} != {source_fps:.3f}"
+            f"Condition and source FPS must be positive: {fps:.3f}, {source_fps:.3f}"
         )
+
+    source_frame_indices = get_source_frame_indices(
+        total_frames, fps, source_fps, len(source_video_reader)
+    )
 
     base = vae_scale_factor_spatial * transformer_patch_size
 
@@ -142,7 +146,7 @@ def main(
     )
 
     scene_ranges = detect_scene_ranges(
-        source_video_reader, total_frames, scene_cut_threshold
+        source_video_reader, source_frame_indices, scene_cut_threshold
     )
     print(
         f"Starting Temporal Chunking inference (Total Frames: {total_frames}, Scenes: {len(scene_ranges)})..."
@@ -179,6 +183,7 @@ def main(
         frames_left, chunk_mask, chunk_cond = load_video_chunk(
             video_reader,
             source_video_reader,
+            source_frame_indices,
             cur_i,
             cur_i + valid_chunk_size,
             scene_end - 1,
@@ -343,12 +348,25 @@ def write_stereo_frames(left_frames, right_frames, sbs_writer, anaglyph_writer):
         anaglyph_writer.write(anaglyph_frame)
 
 
-def detect_scene_ranges(video_reader, total_frames, threshold):
+def get_source_frame_indices(
+    total_frames, condition_fps, source_fps, source_frame_count
+):
+    frame_indices = [
+        min(round(frame_index * source_fps / condition_fps), source_frame_count - 1)
+        for frame_index in range(total_frames)
+    ]
+    if not frame_indices or frame_indices[-1] >= source_frame_count:
+        raise ValueError("Condition frames cannot be mapped to the source video")
+    return frame_indices
+
+
+def detect_scene_ranges(video_reader, source_frame_indices, threshold):
+    total_frames = len(source_frame_indices)
     if total_frames <= 1 or threshold <= 0:
         return [(0, total_frames)]
 
     scene_starts = [0]
-    previous_frame = video_reader.get_batch([0]).asnumpy()[0]
+    previous_frame = video_reader.get_batch([source_frame_indices[0]]).asnumpy()[0]
     previous_frame = F.interpolate(
         torch.from_numpy(previous_frame).permute(2, 0, 1).unsqueeze(0).float(),
         size=(64, 64),
@@ -356,7 +374,9 @@ def detect_scene_ranges(video_reader, total_frames, threshold):
     )[0].mean(0)
 
     for frame_index in range(1, total_frames):
-        current_frame = video_reader.get_batch([frame_index]).asnumpy()[0]
+        current_frame = video_reader.get_batch(
+            [source_frame_indices[frame_index]]
+        ).asnumpy()[0]
         current_frame = F.interpolate(
             torch.from_numpy(current_frame).permute(2, 0, 1).unsqueeze(0).float(),
             size=(64, 64),
@@ -1134,6 +1154,7 @@ def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
 def load_video_chunk(
     video_reader,
     source_video_reader,
+    source_frame_indices,
     start_frame,
     end_frame,
     max_frame_index,
@@ -1155,7 +1176,9 @@ def load_video_chunk(
     all_frames = frames[:, :, :, :, width:].clone()
     del frames
 
-    source_frames = source_video_reader.get_batch(frame_indices)
+    source_frames = source_video_reader.get_batch(
+        [source_frame_indices[frame_index] for frame_index in frame_indices]
+    )
     frames_left = (
         torch.from_numpy(source_frames.asnumpy())
         .permute(3, 0, 1, 2)

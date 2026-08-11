@@ -39,11 +39,11 @@ def main(
     process_length: int = -1,
     batch_size: int = 10,
     cpu_offload: str = "model",
-    num_denoising_steps: int = 8,
+    num_denoising_steps: int = 6,
     guidance_scale: float = 1.2,
-    window_size: int = 70,
-    overlap: int = 25,
-    max_res: int = 1024,
+    window_size: int = 56,
+    overlap: int = 16,
+    max_res: int = 896,
     dataset: str = "open",
     target_fps: int = 30,
     seed: int = 42,
@@ -53,7 +53,7 @@ def main(
     depth_low_percentile: float = 1.0,
     depth_high_percentile: float = 99.0,
     scene_cut_threshold: float = 0.22,
-    mask_dilation: int = 4,
+    mask_dilation: int = 2,
     depth_edge_threshold: float = 0.03,
     overwrite: bool = False,
 ):
@@ -127,9 +127,10 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
     vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
 
     avg_fps = vid.get_avg_fps()
-    fps = avg_fps if target_fps == -1 else min(target_fps, avg_fps)
-    stride = round(avg_fps / fps)
+    max_fps = avg_fps if target_fps == -1 else min(target_fps, avg_fps)
+    stride = round(avg_fps / max_fps)
     stride = max(stride, 1)
+    fps = avg_fps / stride
     frames_idx = list(range(0, len(vid), stride))
     print(
         f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}",
@@ -190,21 +191,21 @@ class DepthCrafterDemo:
         self,
         input_video_path: str,
         output_video_path: str,
-        process_length: int = -1,
-        num_denoising_steps: int = 8,
-        guidance_scale: float = 1.2,
-        window_size: int = 70,
-        overlap: int = 25,
-        max_res: int = 1024,
-        dataset: str = "open",
-        target_fps: int = -1,
-        seed: int = 42,
-        track_time: bool = False,
-        save_depth: bool = True,
-        decode_chunk_size: int = 8,
-        depth_low_percentile: float = 1.0,
-        depth_high_percentile: float = 99.0,
-        scene_cut_threshold: float = 0.22,
+        process_length: int,
+        num_denoising_steps: int,
+        guidance_scale: float,
+        window_size: int,
+        overlap: int,
+        max_res: int,
+        dataset: str,
+        target_fps: int,
+        seed: int,
+        track_time: bool,
+        save_depth: bool,
+        decode_chunk_size: int,
+        depth_low_percentile: float,
+        depth_high_percentile: float,
+        scene_cut_threshold: float,
     ):
         set_seed(seed)
 
@@ -388,9 +389,10 @@ def DepthSplatting(
     print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
-    fps = original_fps if target_fps == -1 else target_fps
-    stride = round(original_fps / fps)
+    max_fps = original_fps if target_fps == -1 else min(target_fps, original_fps)
+    stride = round(original_fps / max_fps)
     stride = max(stride, 1)
+    fps = original_fps / stride
     frames_idx = list(range(0, len(vid_reader), stride))
 
     if process_length != -1 and process_length < len(frames_idx):
@@ -429,22 +431,10 @@ def DepthSplatting(
         disp_map = disp_map * 2.0 - 1.0
         disp_map = disp_map * effective_max_disp
 
-        depth_edges_x = torch.abs(disp_map[:, :, :, 1:] - disp_map[:, :, :, :-1])
-        depth_edges_y = torch.abs(disp_map[:, :, 1:, :] - disp_map[:, :, :-1, :])
-        depth_edges = torch.zeros_like(disp_map)
-        depth_edges[:, :, :, 1:] = torch.maximum(
-            depth_edges[:, :, :, 1:], depth_edges_x
-        )
-        depth_edges[:, :, 1:, :] = torch.maximum(
-            depth_edges[:, :, 1:, :], depth_edges_y
-        )
-        depth_edges = (depth_edges >= effective_max_disp * depth_edge_threshold).float()
-
         with torch.no_grad():
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
-            warped_depth_edges = stereo_projector(depth_edges, disp_map)[0]
 
-        repair_mask = torch.maximum(occlusion_mask, (warped_depth_edges > 0.05).float())
+        repair_mask = occlusion_mask
         if mask_dilation > 0:
             kernel_size = mask_dilation * 2 + 1
             repair_mask = F.max_pool2d(
@@ -453,6 +443,19 @@ def DepthSplatting(
                 stride=1,
                 padding=mask_dilation,
             )
+
+        repair_mask = (repair_mask >= 0.5).float()
+        repair_mask = (
+            F.max_pool3d(
+                repair_mask.permute(1, 0, 2, 3).unsqueeze(0),
+                kernel_size=(3, 1, 1),
+                stride=1,
+                padding=(1, 0, 0),
+            )
+            .squeeze(0)
+            .permute(1, 0, 2, 3)
+        )
+        right_video = right_video * (1.0 - repair_mask) + left_video * repair_mask
 
         right_video = right_video.cpu().permute(0, 2, 3, 1).numpy()
         repair_mask = repair_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
@@ -464,10 +467,6 @@ def DepthSplatting(
         del (
             left_video,
             disp_map,
-            depth_edges,
-            depth_edges_x,
-            depth_edges_y,
-            warped_depth_edges,
             right_video,
             occlusion_mask,
             repair_mask,

@@ -25,9 +25,10 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--unet_path ./weights/DepthCrafter \
 	--target_fps 30 \
 	--max_disp 26 \
-	--max_res 1024 \
-	--window_size 70 \
-	--overlap 25 \
+	--max_res 896 \
+	--num_denoising_steps 6 \
+	--window_size 56 \
+	--overlap 16 \
 	--decode_chunk_size 8 \
 	--cpu_offload model
 
@@ -40,14 +41,14 @@ python -u s1_pipeline/s2_inpainting.py \
 	--output_path "$OUTPUT_DIR" \
 	--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
-	--tile_num 3 \
+	--tile_num 2 \
 	--frames_chunk 25 \
-	--frames_overlap 8 \
+	--frames_overlap 4 \
 	--transformer_dtype fp8 \
 	--transformer_cpu_offload none \
 	--vae_cpu_offload manual \
 	--inpaint_scale 1.0 \
-	--inference_steps 10
+	--inference_steps 5
 
 printf "\n\n=== STEP 3: GREENSCREEN ===\n"
 python -u s1_pipeline/s3_greenscreen.py \

@@ -22,8 +22,8 @@ def main(
     rife_model: str = "rife-v4.25",
     gpu: int = 0,
     scene_thresh: int = 100,
-    crf: int = g.ENCODE_CRF,
-    preset: str = g.ENCODE_PRESET,
+    crf: int = 12,
+    preset: str = "slow",
     stereo_aware: bool = True,
     overwrite: bool = False,
 ):
@@ -243,6 +243,8 @@ def split_stereo_video(input_video_path, left_output_path, right_output_path):
         "ffv1",
         "-level",
         "3",
+        "-pix_fmt",
+        "yuv444p",
         left_output_path,
         "-map",
         "[rightout]",
@@ -250,6 +252,8 @@ def split_stereo_video(input_video_path, left_output_path, right_output_path):
         "ffv1",
         "-level",
         "3",
+        "-pix_fmt",
+        "yuv444p",
         right_output_path,
     ]
     run_command(command)

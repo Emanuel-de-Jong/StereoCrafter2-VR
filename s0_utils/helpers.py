@@ -88,7 +88,7 @@ class RawVideoWriter:
                     "-g",
                     "1",
                     "-pix_fmt",
-                    "bgr0",
+                    "yuv444p",
                 ]
             )
         else:

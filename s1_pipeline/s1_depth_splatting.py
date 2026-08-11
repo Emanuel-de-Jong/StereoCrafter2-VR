@@ -405,6 +405,30 @@ def preprocess_depth(batch_depth, depth_dilation, depth_blur, depth_edge_thresho
     return np.stack(processed_frames).astype(np.float32)
 
 
+def build_m2s_occlusion_mask_from_disparity(disp_map_tensor, eps=1e-6):
+    disp = disp_map_tensor[:, 0].to(dtype=torch.float32)
+    batch, height, width = disp.shape
+    device = disp.device
+    base_x = torch.arange(width, device=device, dtype=torch.float32).view(1, width)
+    hole_masks = []
+    for batch_index in range(batch):
+        disp_frame = disp[batch_index]
+        dest_x = base_x - disp_frame
+        x0 = torch.floor(dest_x)
+        x1 = x0 + 1.0
+        w1 = dest_x - x0
+        w0 = 1.0 - w1
+        valid0 = (x0 >= 0.0) & (x0 < float(width))
+        valid1 = (x1 >= 0.0) & (x1 < float(width))
+        x0_idx = x0.clamp(0, width - 1).to(torch.int64)
+        x1_idx = x1.clamp(0, width - 1).to(torch.int64)
+        occupancy = torch.zeros((height, width), device=device, dtype=torch.float32)
+        occupancy.scatter_add_(1, x0_idx, w0 * valid0.to(torch.float32))
+        occupancy.scatter_add_(1, x1_idx, w1 * valid1.to(torch.float32))
+        hole_masks.append((occupancy <= eps).to(dtype=torch.float32))
+    return torch.stack(hole_masks, dim=0).unsqueeze(1).clamp_(0.0, 1.0)
+
+
 class ForwardWarpStereo(nn.Module):
     def __init__(self, eps=1e-6, occlu_map=False):
         super(ForwardWarpStereo, self).__init__()
@@ -558,7 +582,8 @@ def DepthSplatting(
         disp_map = disp_map * effective_max_disp
 
         with torch.no_grad():
-            right_video, occlusion_mask = stereo_projector(left_video, disp_map)
+            right_video, _ = stereo_projector(left_video, disp_map)
+        occlusion_mask = build_m2s_occlusion_mask_from_disparity(disp_map)
 
         repair_mask = occlusion_mask
         if mask_dilation > 0:

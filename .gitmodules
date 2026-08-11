@@ -1,6 +1,0 @@
-[submodule "dependencies/DepthCrafter"]
-	path = dependencies/DepthCrafter
-	url = https://github.com/Tencent/DepthCrafter
-[submodule "dependencies/Forward-Warp"]
-	path = dependencies/Forward-Warp
-	url = https://github.com/TencentARC/Forward-Warp.git

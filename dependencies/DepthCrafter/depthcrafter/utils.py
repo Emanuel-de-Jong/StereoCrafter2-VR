@@ -70,12 +70,10 @@ def save_video(
 
 
 class ColorMapper:
-    # a color mapper to map depth values to a certain colormap
     def __init__(self, colormap: str = "inferno"):
         self.colormap = torch.tensor(cm.get_cmap(colormap).colors)
 
     def apply(self, image: torch.Tensor, v_min=None, v_max=None):
-        # assert len(image.shape) == 2
         if v_min is None:
             v_min = image.min()
         if v_max is None:

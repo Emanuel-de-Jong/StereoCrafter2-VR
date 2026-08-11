@@ -51,7 +51,7 @@ def test_forward_warp_max_motion_forward():
     d_buffer_target = torch.zeros(B, 1, H, W, dtype=torch.int32).cuda()
     d_buffer_target[0,0,:2,:2] = 70
     wght_buffer_target = torch.ones(B, 1, H, W).cuda()
-    wght_buffer_target[0,0,:2,:2] = 0.25  # gets spread equally onto 4 neighbors
+    wght_buffer_target[0,0,:2,:2] = 0.25
 
     assert warped.shape == img.shape, f"{warped.shape, img.shape}"
     assert torch.allclose(disocclusions, torch.zeros(B, 1, H, W).cuda()), f"{disocclusions}"
@@ -165,7 +165,6 @@ def test_forward_warp_max_motion_expansion():
 
     warped, disocclusions, im1_buffer, d_buffer, wght_buffer = fw(img, flow, debug=True)
 
-    # Note the differences to arange * 0.25
     warped_target = torch.tensor(
         [ 0.0000,  1.0000,  2.0000,  2.3334,  3.0000,  4.0000,  5.0000, 6.0000,
           6.3334,  7.0000,  8.0000,  9.0000, 10.0000, 10.3335, 11.0000, 12.0000]
@@ -179,7 +178,6 @@ def test_forward_warp_max_motion_expansion():
 
     warped, disocclusions, im1_buffer, d_buffer, wght_buffer = fw(img, flow, debug=True)
 
-    # Note the differences to arange * 0.25
     warped_target = torch.tensor(
         [ 0.0000,  1.0000,  1.6666,  2.0000,  3.0000,  4.0000,  5.0000,  5.6666,
           6.0000,  7.0000,  8.0000,  9.0000,  9.6665, 10.0000,  11.0000, 12.000]
@@ -189,4 +187,3 @@ def test_forward_warp_max_motion_expansion():
     assert torch.allclose(warped, warped_target, atol=1e-4), f"{warped, warped_target, warped - warped_target}"
     assert torch.allclose(disocclusions, disocclusions_target), f"{disocclusions, disocclusions_target}"
 
-    # # assert False, '\n'.join([str(val) for val in [img, flow, warped, disocclusions, im1_buffer, d_buffer, wght_buffer]])

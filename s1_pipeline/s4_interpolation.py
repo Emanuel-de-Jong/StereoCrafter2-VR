@@ -18,12 +18,13 @@ def main(
     input_video_path: str = str(g.OUTPUTS_DIR / "vid_3_greenscreen.mp4"),
     output_video_path: str = str(g.OUTPUTS_DIR / "vid_4_interp.mp4"),
     video2x_path: str = str(g.VIDEO2X_PATH),
-    target_fps: int = 45,
+    target_fps: int = 60,
     rife_model: str = "rife-v4.25",
     gpu: int = 0,
     scene_thresh: int = 100,
-    crf: int = 16,
-    preset: str = "medium",
+    crf: int = g.ENCODE_CRF,
+    preset: str = g.ENCODE_PRESET,
+    stereo_aware: bool = True,
     overwrite: bool = False,
 ):
     if should_skip_output(output_video_path, overwrite):
@@ -45,12 +46,37 @@ def main(
     print(f"Target FPS: {target_fps}", flush=True)
 
     if input_fps >= target_fps:
-        print("Input FPS is already at or above target FPS, copying video.", flush=True)
-        shutil.copy2(input_video_path, output_video_path)
+        if abs(input_fps - target_fps) < 0.01:
+            print("Input FPS already matches target FPS, copying video.", flush=True)
+            shutil.copy2(input_video_path, output_video_path)
+        else:
+            print("Input FPS is above target FPS, conforming video.", flush=True)
+            conform_video_fps(
+                input_video_path,
+                output_video_path,
+                target_fps,
+                crf,
+                preset,
+            )
         return
 
     print(f"RIFE model: {rife_model}", flush=True)
     print(f"Frame rate multiplier: {frame_rate_multiplier}x", flush=True)
+
+    if stereo_aware:
+        run_stereo_interpolation(
+            video2x_path,
+            input_video_path,
+            output_video_path,
+            frame_rate_multiplier,
+            target_fps,
+            rife_model,
+            gpu,
+            scene_thresh,
+            crf,
+            preset,
+        )
+        return
 
     if abs(interpolated_fps - target_fps) < 0.01:
         run_rife_interpolation(
@@ -140,6 +166,125 @@ def run_rife_interpolation(
         command.extend(["-d", str(gpu)])
 
     print("Running RIFE interpolation", flush=True)
+    run_command(command)
+
+
+def run_stereo_interpolation(
+    video2x_path,
+    input_video_path,
+    output_video_path,
+    frame_rate_multiplier,
+    target_fps,
+    rife_model,
+    gpu,
+    scene_thresh,
+    crf,
+    preset,
+):
+    output_dir = os.path.dirname(output_video_path) or "."
+    output_name = os.path.splitext(os.path.basename(output_video_path))[0]
+    left_input_path = os.path.join(output_dir, f".{output_name}_left_input.mkv")
+    right_input_path = os.path.join(output_dir, f".{output_name}_right_input.mkv")
+    left_output_path = os.path.join(output_dir, f".{output_name}_left_rife.mp4")
+    right_output_path = os.path.join(output_dir, f".{output_name}_right_rife.mp4")
+    temp_paths = [
+        left_input_path,
+        right_input_path,
+        left_output_path,
+        right_output_path,
+    ]
+
+    try:
+        split_stereo_video(input_video_path, left_input_path, right_input_path)
+        run_rife_interpolation(
+            video2x_path,
+            left_input_path,
+            left_output_path,
+            frame_rate_multiplier,
+            rife_model,
+            gpu,
+            scene_thresh,
+        )
+        run_rife_interpolation(
+            video2x_path,
+            right_input_path,
+            right_output_path,
+            frame_rate_multiplier,
+            rife_model,
+            gpu,
+            scene_thresh,
+        )
+        combine_stereo_video(
+            left_output_path,
+            right_output_path,
+            output_video_path,
+            target_fps,
+            crf,
+            preset,
+        )
+    finally:
+        for temp_path in temp_paths:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
+def split_stereo_video(input_video_path, left_output_path, right_output_path):
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        input_video_path,
+        "-filter_complex",
+        "[0:v]split=2[left][right];[left]crop=iw/2:ih:0:0[leftout];[right]crop=iw/2:ih:iw/2:0[rightout]",
+        "-map",
+        "[leftout]",
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        left_output_path,
+        "-map",
+        "[rightout]",
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        right_output_path,
+    ]
+    run_command(command)
+
+
+def combine_stereo_video(
+    left_input_path,
+    right_input_path,
+    output_video_path,
+    target_fps,
+    crf,
+    preset,
+):
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        left_input_path,
+        "-i",
+        right_input_path,
+        "-filter_complex",
+        f"[0:v]fps={target_fps}[left];[1:v]fps={target_fps}[right];[left][right]hstack=inputs=2[out]",
+        "-map",
+        "[out]",
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(crf),
+        "-preset",
+        preset,
+        "-pix_fmt",
+        "yuv420p",
+        output_video_path,
+    ]
     run_command(command)
 
 

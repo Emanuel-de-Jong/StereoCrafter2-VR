@@ -18,11 +18,8 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
         return_dict: bool = True,
     ) -> Union[UNetSpatioTemporalConditionOutput, Tuple]:
 
-        # 1. time
         timesteps = timestep
         if not torch.is_tensor(timesteps):
-            # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
-            # This would be a good case for the `match` statement (Python 3.10+)
             is_mps = sample.device.type == "mps"
             if isinstance(timestep, float):
                 dtype = torch.float32 if is_mps else torch.float64
@@ -32,18 +29,14 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
         elif len(timesteps.shape) == 0:
             timesteps = timesteps[None].to(sample.device)
 
-        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
         batch_size, num_frames = sample.shape[:2]
         timesteps = timesteps.expand(batch_size)
 
         t_emb = self.time_proj(timesteps)
 
-        # `Timesteps` does not contain any weights and will always return f32 tensors
-        # but time_embedding might actually be running in fp16. so we need to cast here.
-        # there might be better ways to encapsulate this.
         t_emb = t_emb.to(dtype=self.conv_in.weight.dtype)
 
-        emb = self.time_embedding(t_emb)  # [batch_size * num_frames, channels]
+        emb = self.time_embedding(t_emb)
 
         time_embeds = self.add_time_proj(added_time_ids.flatten())
         time_embeds = time_embeds.reshape((batch_size, -1))
@@ -51,16 +44,10 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
         aug_emb = self.add_embedding(time_embeds)
         emb = emb + aug_emb
 
-        # Flatten the batch and frames dimensions
-        # sample: [batch, frames, channels, height, width] -> [batch * frames, channels, height, width]
         sample = sample.flatten(0, 1)
-        # Repeat the embeddings num_video_frames times
-        # emb: [batch, channels] -> [batch * frames, channels]
         emb = emb.repeat_interleave(num_frames, dim=0)
-        # encoder_hidden_states: [batch, frames, channels] -> [batch * frames, 1, channels]
         encoder_hidden_states = encoder_hidden_states.flatten(0, 1).unsqueeze(1)
 
-        # 2. pre-process
         sample = sample.to(dtype=self.conv_in.weight.dtype)
         assert sample.dtype == self.conv_in.weight.dtype, (
             f"sample.dtype: {sample.dtype}, "
@@ -94,7 +81,6 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
 
             down_block_res_samples += res_samples
 
-        # 4. mid
         sample = self.mid_block(
             hidden_states=sample,
             temb=emb,
@@ -102,7 +88,6 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
             image_only_indicator=image_only_indicator,
         )
 
-        # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
             res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
             down_block_res_samples = down_block_res_samples[
@@ -128,12 +113,10 @@ class DiffusersUNetSpatioTemporalConditionModelDepthCrafter(
                     image_only_indicator=image_only_indicator,
                 )
 
-        # 6. post-process
         sample = self.conv_norm_out(sample)
         sample = self.conv_act(sample)
         sample = self.conv_out(sample)
 
-        # 7. Reshape back to original shape
         sample = sample.reshape(batch_size, num_frames, *sample.shape[1:])
 
         if not return_dict:

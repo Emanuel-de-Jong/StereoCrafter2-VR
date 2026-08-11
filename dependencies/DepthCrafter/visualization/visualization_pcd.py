@@ -1,6 +1,3 @@
-"""Record3D visualizer
-"""
-
 import time
 from decord import VideoReader, cpu
 
@@ -43,7 +40,6 @@ def main(
     fps = vr.get_avg_fps()
     num_frames = min(max_frames, T)
 
-    # Add playback UI.
     with server.gui.add_folder("Playback"):
         gui_timestep = server.gui.add_slider(
             "Timestep",
@@ -63,7 +59,6 @@ def main(
             "FPS options", ("10", "20", "30", "60")
         )
 
-    # Frame step buttons.
     @gui_next_frame.on_click
     def _(_) -> None:
         gui_timestep.value = (gui_timestep.value + 1) % num_frames
@@ -72,21 +67,18 @@ def main(
     def _(_) -> None:
         gui_timestep.value = (gui_timestep.value - 1) % num_frames
 
-    # Disable frame controls when we're playing.
     @gui_playing.on_update
     def _(_) -> None:
         gui_timestep.disabled = gui_playing.value
         gui_next_frame.disabled = gui_playing.value
         gui_prev_frame.disabled = gui_playing.value
 
-    # Set the framerate when we click one of the options.
     @gui_framerate_options.on_click
     def _(_) -> None:
         gui_framerate.value = int(gui_framerate_options.value)
 
     prev_timestep = gui_timestep.value
 
-    # Toggle frame visibility when the timestep slider changes.
     @gui_timestep.on_update
     def _(_) -> None:
         nonlocal prev_timestep
@@ -95,9 +87,8 @@ def main(
             frame_nodes[current_timestep].visible = True
             frame_nodes[prev_timestep].visible = False
         prev_timestep = current_timestep
-        server.flush()  # Optional!
+        server.flush()
 
-    # Load in frames.
     server.scene.add_frame(
         "/frames",
         wxyz=tf.SO3.exp(np.array([0.0, 0.0, 0.0])).wxyz,
@@ -107,7 +98,6 @@ def main(
     frame_nodes: list[viser.FrameHandle] = []
     for i in tqdm(range(num_frames)):
 
-        # Add base frame.
         frame_nodes.append(server.scene.add_frame(f"/frames/t{i}", show_axes=False))
 
         position_image = np.where(np.zeros([H, W]) == 0)
@@ -116,12 +106,11 @@ def main(
         d = disp_map[i, v, u]
 
         zc = 1.0 / (d + 0.1)
-        # zc = 1.0 / (d + 1e-8)
 
         xc = zc * (u - (W / 2.0)) / (W / 2.0)
         yc = zc * (v - (H / 2.0)) / (H / 2.0)
 
-        zc -= 4  # disp_max * 0.2
+        zc -= 4
 
         points = np.stack((xc, yc, zc), axis=1)
         colors = vid[i, v, u]
@@ -129,20 +118,17 @@ def main(
         points = points[::downsample_factor]
         colors = colors[::downsample_factor]
 
-        # Place the point cloud in the frame.
         server.scene.add_point_cloud(
             name=f"/frames/t{i}/point_cloud",
             points=points,
             colors=colors,
-            point_size=point_size,  # 0.007,
+            point_size=point_size,
             point_shape="rounded",
         )
 
-    # Hide all but the current frame.
     for i, frame_node in enumerate(frame_nodes):
         frame_node.visible = i == gui_timestep.value
 
-    # Playback update loop.
     prev_timestep = gui_timestep.value
     while True:
         if gui_playing.value:
@@ -154,13 +140,9 @@ def main(
 if __name__ == "__main__":
     tyro.cli(
         main(
-            # dir path of saved rgb.mp4 and disp.npz, modify it to your own dir
             data_path="./demo_output",
-            # sample name, modify it to your own sample name
             vid_name="example_01",
-            # downsample factor of dense pcd
             downsample_factor=8,
-            # point cloud size
             point_size=0.007,
         )
     )

@@ -9,7 +9,7 @@ import imageio
 
 def _read_image(img_rel_path) -> np.ndarray:
     image_to_read = img_rel_path
-    image = Image.open(image_to_read)  # [H, W, rgb]
+    image = Image.open(image_to_read)
     image = np.asarray(image)
     return image
 

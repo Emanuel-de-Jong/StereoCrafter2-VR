@@ -16,7 +16,7 @@ def get_mask(img, flow):
 def get_color_mask(mask, value=1, margin=0.1):
 
     def get_map(mask, value, margin, bigger_than=False, smaller_than=False):
-        assert bool(smaller_than) or bool(bigger_than)  # select either
+        assert bool(smaller_than) or bool(bigger_than)
         mask1 = mask[:,0,:,:]
         map1 = torch.zeros_like(mask1)
         if smaller_than and bigger_than:
@@ -26,7 +26,7 @@ def get_color_mask(mask, value=1, margin=0.1):
             map1[map1 < 0] = 0
         elif smaller_than:
             map1[mask1 < value - margin] = 1
-        else: # bigger_than
+        else:
             map1[mask1 > value + margin] = 1
         return map1
     
@@ -61,9 +61,6 @@ if __name__ == "__main__":
     fw = forward_warp()
     fw_rescaled = forward_warp_rescaled()
 
-    # since = time.time()
-    # im1_python = fw(im0, flow)
-    # print("python version forward cost time: {}".format(time.time()-since))
 
     im0 = im0.cuda()
     flow = flow.cuda()
@@ -80,8 +77,6 @@ if __name__ == "__main__":
     print("cuda rescaled version forward cost time: {}".format(time.time()-since))
     
     loss_fn = torch.nn.MSELoss()
-    # python_loss = loss_fn(im1_python, im1)
-    # print("python loss: {}".format(python_loss))
     cuda_loss = loss_fn(im1_cuda, im1.cuda())
     print("cuda loss: {}".format(cuda_loss))
     cuda_rescaled_loss = loss_fn(im1_cuda_rescaled, im1.cuda())
@@ -90,7 +85,6 @@ if __name__ == "__main__":
     previous_loss = loss_fn(im0.cuda(), im1.cuda())
     print("previous loss: {}".format(previous_loss))
 
-    # log_image(im1_python, "im1_python")
     log_image(im1_cuda, "im1_cuda")
     log_image(im1_cuda_rescaled, "im1_cuda_rescaled")
     
@@ -98,7 +92,5 @@ if __name__ == "__main__":
     for margin in [0.5, 0.1, 0.01, 0.001]:
         mask_colored = get_color_mask(mask_cuda, margin=margin)
         log_image(mask_colored * 255, "mask_colored_{}".format(str(margin)))
-    # margin 0.5 or 0.1 should be good
 
-    # test backward
     im1_cuda.mean().backward()

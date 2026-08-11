@@ -34,13 +34,10 @@ class forward_warp_max_motion_function(Function):
         else:
             raise NotImplementedError
 
-        # wght is added C times to buffer
         wght_buffer /= C
 
-        # rescale image
         im1 = im1_buffer / wght_buffer.clamp(min=eps)
 
-        # disocclusion
         disocclusions = torch.zeros(B, 1, H, W, device=im0.device)
         disocclusions[wght_buffer == 0] = 1
 

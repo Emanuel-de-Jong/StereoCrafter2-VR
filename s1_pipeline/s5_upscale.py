@@ -21,6 +21,8 @@ def main(
     target_height: int = 2560,
     realesrgan_model: str = "realesr-animevideov3",
     gpu: int = 0,
+    crf: int = g.ENCODE_CRF,
+    preset: str = g.ENCODE_PRESET,
     overwrite: bool = False,
 ):
     if should_skip_output(output_video_path, overwrite):
@@ -91,6 +93,8 @@ def main(
                 output_video_path,
                 current_width,
                 current_height,
+                crf,
+                preset,
             )
         else:
             os.replace(current_input_path, output_video_path)
@@ -104,6 +108,8 @@ def main(
             output_video_path,
             target_output_width,
             target_output_height,
+            crf,
+            preset,
         )
 
     for temp_path in temp_paths:
@@ -179,7 +185,7 @@ def run_video2x(
     run_command(command)
 
 
-def resize_video(input_video_path, output_video_path, width, height):
+def resize_video(input_video_path, output_video_path, width, height, crf, preset):
     ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
     command = [
         ffmpeg_path,
@@ -190,6 +196,10 @@ def resize_video(input_video_path, output_video_path, width, height):
         f"scale={width}:{height}:flags=lanczos",
         "-c:v",
         "libx264",
+        "-crf",
+        str(crf),
+        "-preset",
+        preset,
         "-pix_fmt",
         "yuv420p",
         "-c:a",

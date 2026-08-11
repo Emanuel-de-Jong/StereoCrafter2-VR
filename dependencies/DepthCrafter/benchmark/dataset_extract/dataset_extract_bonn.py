@@ -8,11 +8,8 @@ import csv
 
 
 def depth_read(filename):
-    # loads depth map D from png file
-    # and returns it as a numpy array
 
     depth_png = np.asarray(Image.open(filename))
-    # make sure we have a proper 16bit depth map here.. not 8bit!
     assert np.max(depth_png) > 255
 
     depth = depth_png.astype(np.float64) / 5000.0
@@ -34,12 +31,10 @@ def extract_bonn(
     scenes_names = os.listdir(depth_root)
     all_samples = []
     for i, seq_name in enumerate(tqdm(scenes_names)):
-        # load all images
         all_img_names = os.listdir(osp.join(depth_root, seq_name, "rgb"))
         all_img_names = [x for x in all_img_names if x.endswith(".png")]
         print(f"sequence frame number: {len(all_img_names)}")
 
-        # for not zero padding image name
         all_img_names.sort()
         all_img_names = sorted(all_img_names, key=lambda x: int(x.split(".")[0][-4:]))
         all_img_names = all_img_names[start_frame:end_frame]
@@ -48,7 +43,6 @@ def extract_bonn(
         all_depth_names = [x for x in all_depth_names if x.endswith(".png")]
         print(f"sequence depth number: {len(all_depth_names)}")
 
-        # for not zero padding image name
         all_depth_names.sort()
         all_depth_names = sorted(
             all_depth_names, key=lambda x: int(x.split(".")[0][-4:])
@@ -69,7 +63,6 @@ def extract_bonn(
             else:
                 continue
 
-            # for idx in range(ref_idx, ref_idx + step):
             for idx in range(ref_idx, ref_e):
                 im_path = osp.join(root, seq_name, "rgb", all_img_names[idx])
                 depth_path = osp.join(
@@ -82,8 +75,8 @@ def extract_bonn(
                 video_depths.append(disp)
                 video_imgs.append(np.array(Image.open(im_path)))
 
-            disp_video = np.array(video_depths)[:, None]  # [:, 0:1, :, :, 0]
-            img_video = np.array(video_imgs)[..., 0:3]  # [:, 0, :, :, 0:3]
+            disp_video = np.array(video_depths)[:, None]
+            img_video = np.array(video_imgs)[..., 0:3]
 
             print(disp_video.max(), disp_video.min())
 
@@ -93,8 +86,6 @@ def extract_bonn(
                 else:
                     return num - 1
 
-            # print(disp_video.shape)
-            # print(img_video.shape)
             height = disp_video.shape[-2]
             width = disp_video.shape[-1]
             height = even_or_odd(height)
@@ -121,14 +112,13 @@ def extract_bonn(
             sample = {}
             sample["filepath_left"] = os.path.join(
                 f"{datatset_name}/{seq_name}_rgb_left.mp4"
-            )  # img_video_path
+            )
             sample["filepath_disparity"] = os.path.join(
                 f"{datatset_name}/{seq_name}_disparity.npz"
-            )  # disp_video_path
+            )
 
             all_samples.append(sample)
 
-    # save csv file
 
     filename_ = csv_save_path
     os.makedirs(os.path.dirname(filename_), exist_ok=True)

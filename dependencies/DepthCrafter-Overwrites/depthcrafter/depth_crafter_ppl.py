@@ -12,7 +12,7 @@ from diffusers.pipelines.stable_video_diffusion.pipeline_stable_video_diffusion 
 from diffusers.utils import logging
 from diffusers.utils.torch_utils import randn_tensor
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+logger = logging.get_logger(__name__)
 
 
 class DepthCrafterPipeline(StableVideoDiffusionPipeline):
@@ -23,16 +23,10 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         video: torch.Tensor,
         chunk_size: int = 14,
     ) -> torch.Tensor:
-        """
-        :param video: [b, c, h, w] in range [-1, 1], the b may contain multiple videos or frames
-        :param chunk_size: the chunk size to encode video
-        :return: image_embeddings in shape of [b, 1024]
-        """
-
         embeddings = []
         for i in range(0, video.shape[0], chunk_size):
             video_224 = _resize_with_antialiasing(video[i : i + chunk_size].float(), (224, 224))
-            video_224 = (video_224 + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+            video_224 = (video_224 + 1.0) / 2.0
             tmp = self.feature_extractor(
                 images=video_224,
                 do_normalize=True,
@@ -41,10 +35,10 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                 do_rescale=False,
                 return_tensors="pt",
             ).pixel_values.to(video.device, dtype=video.dtype)
-            embeddings.append(self.image_encoder(tmp).image_embeds)  # [b, 1024]
+            embeddings.append(self.image_encoder(tmp).image_embeds)
             del video_224, tmp
 
-        embeddings = torch.cat(embeddings, dim=0)  # [t, 1024]
+        embeddings = torch.cat(embeddings, dim=0)
         return embeddings
 
     @torch.inference_mode()
@@ -53,11 +47,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         video: torch.Tensor,
         chunk_size: int = 14,
     ):
-        """
-        :param video: [b, c, h, w] in range [-1, 1], the b may contain multiple videos or frames
-        :param chunk_size: the chunk size to encode video
-        :return: vae latents in shape of [b, c, h, w]
-        """
         video_latents = []
         for i in range(0, video.shape[0], chunk_size):
             video_latents.append(
@@ -68,12 +57,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
     @staticmethod
     def check_inputs(video, height, width):
-        """
-        :param video:
-        :param height:
-        :param width:
-        :return:
-        """
         if not isinstance(video, torch.Tensor) and not isinstance(video, np.ndarray):
             raise ValueError(
                 f"Expected `video` to be a `torch.Tensor` or `VideoReader`, but got a {type(video)}"
@@ -104,26 +87,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         overlap: int = 25,
         track_time: bool = False,
     ):
-        """
-        :param video: in shape [t, h, w, c] if np.ndarray or [t, c, h, w] if torch.Tensor, in range [0, 1]
-        :param height:
-        :param width:
-        :param num_inference_steps:
-        :param guidance_scale:
-        :param window_size: sliding window processing size
-        :param fps:
-        :param motion_bucket_id:
-        :param noise_aug_strength:
-        :param decode_chunk_size:
-        :param generator:
-        :param latents:
-        :param output_type:
-        :param callback_on_step_end:
-        :param callback_on_step_end_tensor_inputs:
-        :param return_dict:
-        :return:
-        """
-        # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
         num_frames = video.shape[0]
@@ -133,24 +96,18 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             overlap = 0
         stride = window_size - overlap
 
-        # 1. Check inputs. Raise error if not correct
         self.check_inputs(video, height, width)
 
-        # 2. Define call parameters
         batch_size = 1
         device = self._execution_device
-        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
-        # corresponds to doing no classifier free guidance.
         self._guidance_scale = guidance_scale
 
-        # 3. Encode input video
         if isinstance(video, np.ndarray):
             video = torch.from_numpy(video.transpose(0, 3, 1, 2))
         else:
             assert isinstance(video, torch.Tensor)
         video = video.to(device=device, dtype=self.dtype)
-        video = video * 2.0 - 1.0  # [0,1] -> [-1,1], in [t, c, h, w]
+        video = video * 2.0 - 1.0
 
         if track_time:
             start_event = torch.cuda.Event(enable_timing=True)
@@ -164,15 +121,13 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             video, chunk_size=decode_chunk_size
         ).unsqueeze(
             0
-        )  # [1, t, 1024]
+        )
         torch.cuda.empty_cache()
-        # 4. Encode input image using VAE
         noise = randn_tensor(
             video.shape, generator=generator, device=device, dtype=video.dtype
         )
-        video = video + noise_aug_strength * noise  # in [t, c, h, w]
+        video = video + noise_aug_strength * noise
 
-        # pdb.set_trace()
         needs_upcasting = (
             self.vae.dtype == torch.float16 and self.vae.config.force_upcast
         )
@@ -185,7 +140,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             chunk_size=decode_chunk_size,
         ).unsqueeze(
             0
-        )  # [1, t, c, h, w]
+        )
 
         if track_time:
             encode_event.record()
@@ -195,11 +150,9 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         torch.cuda.empty_cache()
 
-        # cast back to fp16 if needed
         if needs_upcasting:
             self.vae.to(dtype=torch.float16)
 
-        # 5. Get Added Time IDs
         added_time_ids = self._get_add_time_ids(
             7,
             127,
@@ -208,17 +161,15 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             batch_size,
             1,
             False,
-        )  # [1 or 2, 3]
+        )
         added_time_ids = added_time_ids.to(device)
 
-        # 6. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler, num_inference_steps, device, None, None
         )
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
-        # 7. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
         latents_init = self.prepare_latents(
             batch_size,
@@ -230,7 +181,7 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             device,
             generator,
             latents,
-        )  # [1, t, c, h, w]
+        )
         latents_all = None
 
         idx_start = 0
@@ -242,15 +193,12 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         torch.cuda.empty_cache()
 
-        # inference strategy for long videos
-        # two main strategies: 1. noise init from previous frame, 2. segments stitching
         print("==> denoising depth windows", flush=True)
         while idx_start < num_frames - overlap:
             idx_end = min(idx_start + window_size, num_frames)
             print(f"==> denoising frames {idx_start + 1}-{idx_end} / {num_frames}", flush=True)
             self.scheduler.set_timesteps(num_inference_steps, device=device)
 
-            # 9. Denoising loop
             latents = latents_init[:, : idx_end - idx_start].clone()
             latents_init = torch.cat(
                 [latents_init[:, -overlap:], latents_init[:, :stride]], dim=1
@@ -269,10 +217,10 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                             * self.scheduler.sigmas[i]
                         )
 
-                    latent_model_input = latents  # [1, t, c, h, w]
+                    latent_model_input = latents
                     latent_model_input = self.scheduler.scale_model_input(
                         latent_model_input, t
-                    )  # [1, t, c, h, w]
+                    )
                     latent_model_input = torch.cat(
                         [latent_model_input, video_latents_current], dim=2
                     )
@@ -283,7 +231,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                         added_time_ids=added_time_ids,
                         return_dict=False,
                     )[0]
-                    # perform guidance
                     if self.do_classifier_free_guidance:
                         latent_model_input = latents
                         latent_model_input = self.scheduler.scale_model_input(
@@ -328,9 +275,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                 latents_all = latents.clone()
             else:
                 assert weights is not None
-                # latents_all[:, -overlap:] = (
-                #     latents[:, :overlap] + latents_all[:, -overlap:]
-                # ) / 2.0
                 latents_all[:, -overlap:] = latents[
                     :, :overlap
                 ] * weights + latents_all[:, -overlap:] * (1 - weights)
@@ -345,7 +289,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             print(f"Elapsed time for denoising video: {elapsed_time_ms} ms", flush=True)
 
         if not output_type == "latent":
-            # cast back to fp16 if needed
             if needs_upcasting:
                 self.vae.to(dtype=torch.float16)
             print("==> decoding depth latents", flush=True)

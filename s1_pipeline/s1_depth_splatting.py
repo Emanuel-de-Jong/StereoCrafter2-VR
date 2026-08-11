@@ -15,7 +15,7 @@ from fire import Fire
 from decord import VideoReader, cpu
 
 import s0_utils.global_params as g
-from s0_utils.helpers import cleanup_cuda, should_skip_output
+from s0_utils.helpers import RawVideoWriter, cleanup_cuda, should_skip_output
 from s0_utils.monitor import monitor_step
 
 from dependencies.DepthCrafter.depthcrafter.depth_crafter_ppl import (
@@ -31,24 +31,30 @@ from Forward_Warp import forward_warp
 
 def main(
     input_video_path: str = str(g.INPUTS_DIR / "vid.mp4"),
-    output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mkv"),
     unet_path: str = str(g.DEPTHCRAFTER_WEIGHTS_PATH),
     pre_trained_path: str = str(g.SVD_WEIGHTS_PATH),
     max_disp: float = 26,
+    max_disp_reference_width: int = 1920,
     process_length: int = -1,
     batch_size: int = 10,
     cpu_offload: str = "model",
     num_denoising_steps: int = 8,
     guidance_scale: float = 1.2,
-    window_size: int = 49,
-    overlap: int = 10,
-    max_res: int = 768,
+    window_size: int = 70,
+    overlap: int = 25,
+    max_res: int = 1024,
     dataset: str = "open",
-    target_fps: int = 15,
+    target_fps: int = 30,
     seed: int = 42,
     track_time: bool = False,
     save_depth: bool = True,
-    decode_chunk_size: int = 4,
+    decode_chunk_size: int = 8,
+    depth_low_percentile: float = 1.0,
+    depth_high_percentile: float = 99.0,
+    scene_cut_threshold: float = 0.22,
+    mask_dilation: int = 4,
+    depth_edge_threshold: float = 0.03,
     overwrite: bool = False,
 ):
     if should_skip_output(output_video_path, overwrite):
@@ -60,7 +66,7 @@ def main(
         cpu_offload=cpu_offload,
     )
 
-    video_depth, depth_vis = depthcrafter_demo.infer(
+    video_depth = depthcrafter_demo.infer(
         input_video_path=input_video_path,
         output_video_path=output_video_path,
         process_length=process_length,
@@ -75,6 +81,9 @@ def main(
         track_time=track_time,
         save_depth=save_depth,
         decode_chunk_size=decode_chunk_size,
+        depth_low_percentile=depth_low_percentile,
+        depth_high_percentile=depth_high_percentile,
+        scene_cut_threshold=scene_cut_threshold,
     )
 
     print("==> unloading DepthCrafter before splatting", flush=True)
@@ -86,11 +95,13 @@ def main(
         input_video_path,
         output_video_path,
         video_depth,
-        depth_vis,
         max_disp,
+        max_disp_reference_width,
         process_length,
         batch_size,
         target_fps,
+        mask_dilation,
+        depth_edge_threshold,
     )
 
 
@@ -115,8 +126,9 @@ def read_video_frames(video_path, process_length, target_fps, max_res, dataset="
 
     vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
 
-    fps = vid.get_avg_fps() if target_fps == -1 else target_fps
-    stride = round(vid.get_avg_fps() / fps)
+    avg_fps = vid.get_avg_fps()
+    fps = avg_fps if target_fps == -1 else min(target_fps, avg_fps)
+    stride = round(avg_fps / fps)
     stride = max(stride, 1)
     frames_idx = list(range(0, len(vid), stride))
     print(
@@ -190,6 +202,9 @@ class DepthCrafterDemo:
         track_time: bool = False,
         save_depth: bool = True,
         decode_chunk_size: int = 8,
+        depth_low_percentile: float = 1.0,
+        depth_high_percentile: float = 99.0,
+        scene_cut_threshold: float = 0.22,
     ):
         set_seed(seed)
 
@@ -202,23 +217,34 @@ class DepthCrafterDemo:
             dataset,
         )
 
-        print("==> running DepthCrafter depth inference", flush=True)
+        scene_ranges = detect_scene_ranges(frames, scene_cut_threshold)
+        print(
+            f"==> running DepthCrafter depth inference across {len(scene_ranges)} scene(s)",
+            flush=True,
+        )
+        scene_depths = []
         with torch.inference_mode():
-            res = self.pipe(
-                frames,
-                height=frames.shape[1],
-                width=frames.shape[2],
-                output_type="np",
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_denoising_steps,
-                window_size=window_size,
-                overlap=overlap,
-                track_time=track_time,
-                decode_chunk_size=decode_chunk_size,
-            ).frames[0]
+            for scene_index, (scene_start, scene_end) in enumerate(scene_ranges):
+                print(
+                    f"==> depth scene {scene_index + 1}/{len(scene_ranges)}: frames {scene_start + 1}-{scene_end}",
+                    flush=True,
+                )
+                scene_depth = self.pipe(
+                    frames[scene_start:scene_end],
+                    height=frames.shape[1],
+                    width=frames.shape[2],
+                    output_type="np",
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_denoising_steps,
+                    window_size=min(window_size, scene_end - scene_start),
+                    overlap=min(overlap, max(scene_end - scene_start - 1, 0)),
+                    track_time=track_time,
+                    decode_chunk_size=decode_chunk_size,
+                ).frames[0]
+                scene_depths.append(scene_depth.sum(-1) / scene_depth.shape[-1])
 
         print("==> post-processing depth maps", flush=True)
-        res = res.sum(-1) / res.shape[-1]
+        res = np.concatenate(scene_depths, axis=0)
 
         resized_res = []
         for i in range(0, len(res), decode_chunk_size):
@@ -239,7 +265,12 @@ class DepthCrafterDemo:
             del tensor_res
         res = np.concatenate(resized_res, axis=0)
 
-        res = (res - res.min()) / (res.max() - res.min())
+        res = normalize_depth_scenes(
+            res,
+            scene_ranges,
+            depth_low_percentile,
+            depth_high_percentile,
+        )
         vis = vis_sequence_depth(res)
         save_path = os.path.join(
             os.path.dirname(output_video_path),
@@ -251,7 +282,49 @@ class DepthCrafterDemo:
             np.savez_compressed(save_path + ".npz", depth=res)
             write_rgb_video(save_path + "_depth_vis.mp4", vis, target_fps)
 
-        return res, vis
+        return res
+
+
+def detect_scene_ranges(frames, threshold):
+    if len(frames) <= 1 or threshold <= 0:
+        return [(0, len(frames))]
+
+    scene_starts = [0]
+    previous_frame = cv2.resize(frames[0], (64, 64), interpolation=cv2.INTER_AREA)
+    previous_gray = cv2.cvtColor(previous_frame, cv2.COLOR_RGB2GRAY) * 255.0
+
+    for frame_index in range(1, len(frames)):
+        current_frame = cv2.resize(
+            frames[frame_index], (64, 64), interpolation=cv2.INTER_AREA
+        )
+        current_gray = cv2.cvtColor(current_frame, cv2.COLOR_RGB2GRAY) * 255.0
+        frame_difference = float(np.mean(np.abs(current_gray - previous_gray))) / 255.0
+        if frame_difference >= threshold:
+            scene_starts.append(frame_index)
+        previous_gray = current_gray
+
+    scene_starts.append(len(frames))
+    return [
+        (scene_starts[index], scene_starts[index + 1])
+        for index in range(len(scene_starts) - 1)
+    ]
+
+
+def normalize_depth_scenes(depth, scene_ranges, low_percentile, high_percentile):
+    normalized_depth = np.empty_like(depth, dtype=np.float32)
+
+    for scene_start, scene_end in scene_ranges:
+        scene_depth = depth[scene_start:scene_end]
+        depth_low = float(np.percentile(scene_depth, low_percentile))
+        depth_high = float(np.percentile(scene_depth, high_percentile))
+        depth_range = max(depth_high - depth_low, 1e-6)
+        normalized_depth[scene_start:scene_end] = np.clip(
+            (scene_depth - depth_low) / depth_range,
+            0.0,
+            1.0,
+        )
+
+    return normalized_depth
 
 
 def write_rgb_video(video_path, frames, fps):
@@ -304,11 +377,13 @@ def DepthSplatting(
     input_video_path,
     output_video_path,
     video_depth,
-    depth_vis,
     max_disp,
+    max_disp_reference_width,
     process_length,
     batch_size,
     target_fps,
+    mask_dilation,
+    depth_edge_threshold,
 ):
     print("==> loading frames for splatting", flush=True)
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
@@ -321,17 +396,21 @@ def DepthSplatting(
     if process_length != -1 and process_length < len(frames_idx):
         frames_idx = frames_idx[:process_length]
 
-    input_frames = vid_reader.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
-    video_depth = video_depth[: len(input_frames)]
-    depth_vis = depth_vis[: len(input_frames)]
+    video_depth = video_depth[: len(frames_idx)]
 
     stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
 
-    num_frames = len(input_frames)
-    height, width, _ = input_frames[0].shape
+    num_frames = len(frames_idx)
+    height, width = vid_reader.get_batch([frames_idx[0]]).shape[1:3]
 
-    out = cv2.VideoWriter(
-        output_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width * 2, height * 2)
+    effective_max_disp = max_disp * width / max_disp_reference_width
+    print(f"==> effective maximum disparity: {effective_max_disp:.2f}px", flush=True)
+    out = RawVideoWriter(
+        output_video_path,
+        width * 2,
+        height,
+        fps,
+        codec="ffv1",
     )
 
     for i in range(0, num_frames, batch_size):
@@ -339,42 +418,64 @@ def DepthSplatting(
             f"==> splatting frames {i + 1}-{min(i + batch_size, num_frames)} / {num_frames}",
             flush=True,
         )
-        batch_frames = input_frames[i : i + batch_size]
+        batch_indices = frames_idx[i : i + batch_size]
+        batch_frames = (
+            vid_reader.get_batch(batch_indices).asnumpy().astype("float32") / 255.0
+        )
         batch_depth = video_depth[i : i + batch_size]
-        batch_depth_vis = depth_vis[i : i + batch_size]
-
         left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
         disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
 
         disp_map = disp_map * 2.0 - 1.0
-        disp_map = disp_map * max_disp
+        disp_map = disp_map * effective_max_disp
+
+        depth_edges_x = torch.abs(disp_map[:, :, :, 1:] - disp_map[:, :, :, :-1])
+        depth_edges_y = torch.abs(disp_map[:, :, 1:, :] - disp_map[:, :, :-1, :])
+        depth_edges = torch.zeros_like(disp_map)
+        depth_edges[:, :, :, 1:] = torch.maximum(
+            depth_edges[:, :, :, 1:], depth_edges_x
+        )
+        depth_edges[:, :, 1:, :] = torch.maximum(
+            depth_edges[:, :, 1:, :], depth_edges_y
+        )
+        depth_edges = (depth_edges >= effective_max_disp * depth_edge_threshold).float()
 
         with torch.no_grad():
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
+            warped_depth_edges = stereo_projector(depth_edges, disp_map)[0]
+
+        repair_mask = torch.maximum(occlusion_mask, (warped_depth_edges > 0.05).float())
+        if mask_dilation > 0:
+            kernel_size = mask_dilation * 2 + 1
+            repair_mask = F.max_pool2d(
+                repair_mask,
+                kernel_size=kernel_size,
+                stride=1,
+                padding=mask_dilation,
+            )
 
         right_video = right_video.cpu().permute(0, 2, 3, 1).numpy()
-        occlusion_mask = (
-            occlusion_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
-        )
+        repair_mask = repair_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
 
         for j in range(len(batch_frames)):
-            video_grid_top = np.concatenate(
-                [batch_frames[j], batch_depth_vis[j]], axis=1
-            )
-            video_grid_bottom = np.concatenate(
-                [occlusion_mask[j], right_video[j]], axis=1
-            )
-            video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
+            condition_frame = np.concatenate([repair_mask[j], right_video[j]], axis=1)
+            out.write(condition_frame)
 
-            video_grid_uint8 = np.clip(video_grid * 255.0, 0, 255).astype(np.uint8)
-            video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
-            out.write(video_grid_bgr)
-
-        del left_video, disp_map, right_video, occlusion_mask
+        del (
+            left_video,
+            disp_map,
+            depth_edges,
+            depth_edges_x,
+            depth_edges_y,
+            warped_depth_edges,
+            right_video,
+            occlusion_mask,
+            repair_mask,
+        )
         torch.cuda.empty_cache()
         gc.collect()
 
-    out.release()
+    out.close()
 
 
 if __name__ == "__main__":

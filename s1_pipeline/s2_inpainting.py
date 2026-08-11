@@ -1,7 +1,6 @@
 import os
 import sys
 import math
-import gc
 from pathlib import Path
 import torch
 import torch.nn.functional as F
@@ -10,10 +9,9 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import s0_utils.global_params as g
-from s0_utils.helpers import cleanup_cuda, should_skip_output
+from s0_utils.helpers import RawVideoWriter, cleanup_cuda, should_skip_output
 from s0_utils.monitor import monitor_step
 
-from diffusers.utils import export_to_video
 from PIL import Image
 from decord import VideoReader, cpu
 from diffusers import WanVACETransformer3DModel, AutoencoderKLWan
@@ -34,19 +32,23 @@ FP8_STATE_FILE = "diffusion_pytorch_model_fp8.pt"
 def main(
     pre_trained_path: str = str(g.WAN_WEIGHTS_PATH),
     transformer_path: str = str(g.STEREOCRAFTER_WEIGHTS_PATH),
-    input_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mp4"),
+    input_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mkv"),
+    source_video_path: str = str(g.INPUTS_DIR / "vid.mp4"),
     output_path: str = str(g.OUTPUTS_DIR),
     output_video_path: str | None = None,
     anaglyph_video_path: str | None = None,
-    frames_chunk: int = 17,
-    frames_overlap: int = 2,
+    frames_chunk: int = 25,
+    frames_overlap: int = 8,
     tile_overlap: int = 128,
-    tile_num: int = 2,
+    tile_num: int = 3,
     inference_steps: int = 10,
-    inpaint_scale: float = 0.5,
+    inpaint_scale: float = 1.0,
     transformer_dtype: str = "fp8",
     transformer_cpu_offload: str = "none",
     vae_cpu_offload: str = "manual",
+    scene_cut_threshold: float = 0.22,
+    output_crf: int = g.ENCODE_CRF,
+    output_preset: str = g.ENCODE_PRESET,
     seed: int = 0,
     overwrite: bool = False,
 ):
@@ -119,8 +121,15 @@ def main(
 
     print("Loading video...")
     video_reader = VideoReader(input_video_path, ctx=cpu(0))
+    source_video_reader = VideoReader(source_video_path, ctx=cpu(0))
     fps = video_reader.get_avg_fps()
-    total_frames = len(video_reader)
+    source_fps = source_video_reader.get_avg_fps()
+    total_frames = min(len(video_reader), len(source_video_reader))
+
+    if abs(fps - source_fps) > 0.01:
+        raise ValueError(
+            f"Condition and source FPS do not match: {fps:.3f} != {source_fps:.3f}"
+        )
 
     base = vae_scale_factor_spatial * transformer_patch_size
 
@@ -132,35 +141,47 @@ def main(
         num_inference_steps=inference_steps, denoising_strength=1.0
     )
 
-    generated_video_chunks = []
-    generated_left_chunks = []
-
-    print(f"Starting Temporal Chunking inference (Total Frames: {total_frames})...")
+    scene_ranges = detect_scene_ranges(
+        source_video_reader, total_frames, scene_cut_threshold
+    )
+    print(
+        f"Starting Temporal Chunking inference (Total Frames: {total_frames}, Scenes: {len(scene_ranges)})..."
+    )
 
     global_len = 0
+    scene_index = 0
+    generated_context = None
+    sbs_writer = None
+    anaglyph_writer = None
 
     while global_len < total_frames:
-        if global_len == 0:
-            cur_i = 0
-            cur_chunk_size = min(frames_chunk, total_frames)
+        scene_start, scene_end = scene_ranges[scene_index]
+        at_scene_start = global_len == scene_start
+
+        if at_scene_start:
+            cur_i = scene_start
+            cur_chunk_size = min(frames_chunk, scene_end - scene_start)
             valid_chunk_size = (
-                (cur_chunk_size - 1) // vae_scale_factor_temporal
-            ) * vae_scale_factor_temporal + 1
+                math.ceil((cur_chunk_size - 1) / vae_scale_factor_temporal)
+                * vae_scale_factor_temporal
+                + 1
+            )
+            generated_context = None
         else:
             cur_i = global_len - frames_overlap
-
-            if cur_i + frames_chunk > total_frames:
-                cur_i = max(0, total_frames - frames_chunk)
-
-            cur_chunk_size = min(frames_chunk, total_frames - cur_i)
+            cur_chunk_size = min(frames_chunk, scene_end - cur_i)
             valid_chunk_size = (
-                (cur_chunk_size - 1) // vae_scale_factor_temporal
-            ) * vae_scale_factor_temporal + 1
+                math.ceil((cur_chunk_size - 1) / vae_scale_factor_temporal)
+                * vae_scale_factor_temporal
+                + 1
+            )
 
         frames_left, chunk_mask, chunk_cond = load_video_chunk(
             video_reader,
+            source_video_reader,
             cur_i,
             cur_i + valid_chunk_size,
+            scene_end - 1,
             inpaint_scale,
             base,
         )
@@ -177,15 +198,24 @@ def main(
             )
 
         actual_overlap = 0
-        if global_len > 0:
+        if not at_scene_start:
             actual_overlap = global_len - cur_i
-
-            context = extract_video_context(generated_video_chunks, cur_i, global_len)
-            if context is not None:
-                chunk_cond[:, :, :actual_overlap, :h_orig, :w_orig] = context.to(
-                    chunk_cond.device
-                )
-                del context
+            if generated_context is not None:
+                context_size = min(actual_overlap, generated_context.shape[2])
+                chunk_cond[
+                    :,
+                    :,
+                    actual_overlap - context_size : actual_overlap,
+                    :h_orig,
+                    :w_orig,
+                ] = generated_context[:, :, -context_size:].to(chunk_cond.device)
+                chunk_mask[
+                    :,
+                    :,
+                    actual_overlap - context_size : actual_overlap,
+                    :h_orig,
+                    :w_orig,
+                ] = 0
 
         print(
             f"Processing chunk [{cur_i}:{cur_i + valid_chunk_size}] | Overlap context: {actual_overlap} frames..."
@@ -227,55 +257,123 @@ def main(
             vae.to("cpu")
             cleanup_cuda()
 
-        del chunk_latents, latents_mean, latents_std, chunk_cond, chunk_mask
+        video_chunk_tensor = video_chunk_tensor.cpu()
+        output_frame_count = video_chunk_tensor.shape[2]
+        preserve_mask = (chunk_mask[:, :, :output_frame_count].float() >= 0.5).to(
+            video_chunk_tensor.dtype
+        )
+        video_chunk_tensor = video_chunk_tensor * preserve_mask + chunk_cond[
+            :, :, :output_frame_count
+        ].float() * (1.0 - preserve_mask)
 
-        if global_len == 0:
-            if pad_h > 0 or pad_w > 0:
-                video_chunk_tensor = video_chunk_tensor[:, :, :, :h_orig, :w_orig]
-            generated_video_chunks.append(video_chunk_tensor.cpu())
-            generated_left_chunks.append(frames_left.cpu())
-            global_len += video_chunk_tensor.shape[2]
-        else:
-            new_frames = video_chunk_tensor[:, :, actual_overlap:]
-            new_left_frames = frames_left[:, :, actual_overlap:]
-            if pad_h > 0 or pad_w > 0:
-                new_frames = new_frames[:, :, :, :h_orig, :w_orig]
-            generated_video_chunks.append(new_frames.cpu())
-            generated_left_chunks.append(new_left_frames.cpu())
-            global_len += new_frames.shape[2]
+        del (
+            chunk_latents,
+            latents_mean,
+            latents_std,
+            chunk_cond,
+            chunk_mask,
+            preserve_mask,
+        )
 
-        del video_chunk_tensor, frames_left
+        if pad_h > 0 or pad_w > 0:
+            video_chunk_tensor = video_chunk_tensor[:, :, :, :h_orig, :w_orig]
+
+        video_chunk_tensor = video_chunk_tensor[:, :, :cur_chunk_size]
+        frames_left = frames_left[:, :, :cur_chunk_size]
+
+        generated_context = video_chunk_tensor
+        new_frames = video_chunk_tensor[:, :, actual_overlap:]
+        new_left_frames = frames_left[:, :, actual_overlap:].cpu()
+
+        if sbs_writer is None:
+            output_height = new_frames.shape[3]
+            output_width = new_frames.shape[4]
+            sbs_writer = RawVideoWriter(
+                frames_sbs_path,
+                output_width * 2,
+                output_height,
+                fps,
+                codec="ffv1" if frames_sbs_path.lower().endswith(".mkv") else "libx264",
+                crf=output_crf,
+                preset=output_preset,
+            )
+            anaglyph_writer = RawVideoWriter(
+                vid_anaglyph_path,
+                output_width,
+                output_height,
+                fps,
+                crf=output_crf,
+                preset=output_preset,
+            )
+
+        write_stereo_frames(
+            new_left_frames,
+            new_frames,
+            sbs_writer,
+            anaglyph_writer,
+        )
+        global_len += new_frames.shape[2]
+
+        del video_chunk_tensor, frames_left, new_frames, new_left_frames
 
         cleanup_cuda()
 
-        if global_len > 0 and actual_overlap >= valid_chunk_size:
-            print(
-                "Warning: Chunk progression stuck due to temporal scaling limits. Exiting loop."
-            )
-            break
+        if global_len >= scene_end:
+            global_len = scene_end
+            scene_index += 1
 
-    final_video = torch.cat(generated_video_chunks, dim=2)
-    frames_left = torch.cat(generated_left_chunks, dim=2)
+    if sbs_writer is not None:
+        sbs_writer.close()
+    if anaglyph_writer is not None:
+        anaglyph_writer.close()
 
-    print("\nExporting final video...")
 
-    video_tensor = final_video[0]
+def write_stereo_frames(left_frames, right_frames, sbs_writer, anaglyph_writer):
+    left_frames = left_frames[0].permute(1, 2, 3, 0).float().numpy()
+    right_frames = right_frames[0].permute(1, 2, 3, 0).float().numpy()
 
-    video_np = video_tensor.permute(1, 2, 3, 0).cpu().float().numpy()
-    video_left_np = frames_left[0].permute(1, 2, 3, 0).cpu().float().numpy()
+    for frame_index in range(len(right_frames)):
+        left_frame = np.clip(left_frames[frame_index], 0.0, 1.0)
+        right_frame = np.clip(right_frames[frame_index], 0.0, 1.0)
+        sbs_writer.write(np.concatenate([left_frame, right_frame], axis=1))
 
-    frames_sbs = np.concatenate([video_left_np, video_np], axis=2)
-    frames_sbs_frames_list = [frames_sbs[i] for i in range(frames_sbs.shape[0])]
-    export_to_video(frames_sbs_frames_list, frames_sbs_path, fps=int(fps))
+        anaglyph_frame = np.zeros_like(left_frame)
+        anaglyph_frame[:, :, 0] = left_frame[:, :, 0]
+        anaglyph_frame[:, :, 1:] = right_frame[:, :, 1:]
+        anaglyph_writer.write(anaglyph_frame)
 
-    video_left_np[:, :, :, 1] = 0
-    video_left_np[:, :, :, 2] = 0
-    video_np[:, :, :, 0] = 0
 
-    vid_anaglyph = video_left_np + video_np
-    vid_anaglyph_frames_list = [vid_anaglyph[i] for i in range(vid_anaglyph.shape[0])]
+def detect_scene_ranges(video_reader, total_frames, threshold):
+    if total_frames <= 1 or threshold <= 0:
+        return [(0, total_frames)]
 
-    export_to_video(vid_anaglyph_frames_list, vid_anaglyph_path, fps=int(fps))
+    scene_starts = [0]
+    previous_frame = video_reader.get_batch([0]).asnumpy()[0]
+    previous_frame = F.interpolate(
+        torch.from_numpy(previous_frame).permute(2, 0, 1).unsqueeze(0).float(),
+        size=(64, 64),
+        mode="area",
+    )[0].mean(0)
+
+    for frame_index in range(1, total_frames):
+        current_frame = video_reader.get_batch([frame_index]).asnumpy()[0]
+        current_frame = F.interpolate(
+            torch.from_numpy(current_frame).permute(2, 0, 1).unsqueeze(0).float(),
+            size=(64, 64),
+            mode="area",
+        )[0].mean(0)
+        frame_difference = (
+            float(torch.mean(torch.abs(current_frame - previous_frame))) / 255.0
+        )
+        if frame_difference >= threshold:
+            scene_starts.append(frame_index)
+        previous_frame = current_frame
+
+    scene_starts.append(total_frames)
+    return [
+        (scene_starts[index], scene_starts[index + 1])
+        for index in range(len(scene_starts) - 1)
+    ]
 
 
 def get_torch_dtype(dtype):
@@ -786,6 +884,7 @@ def run_wan_pipeline(
     vae_scale_factor_temporal,
     transformer_patch_size,
     vae_cpu_offload="none",
+    initial_latents=None,
 ):
     height, width = cond_frames.shape[3], cond_frames.shape[4]
     num_frames = cond_frames.shape[2]
@@ -842,10 +941,13 @@ def run_wan_pipeline(
     h = height // vae_scale_factor_spatial
     w = width // vae_scale_factor_spatial
 
-    latents = torch.randn(1, c, f, h, w, device=DEVICE, dtype=DTYPE)
+    if initial_latents is None:
+        latents = torch.randn(1, c, f, h, w, device=DEVICE, dtype=DTYPE)
+    else:
+        latents = initial_latents.to(DEVICE, dtype=DTYPE).clone()
 
-    for i, t in enumerate(noise_scheduler.timesteps):
-        timestep_tensor = t.unsqueeze(0).to(DEVICE, dtype=DTYPE)
+    for timestep in noise_scheduler.timesteps:
+        timestep_tensor = timestep.unsqueeze(0).to(DEVICE, dtype=DTYPE)
         with torch.no_grad():
             model_pred = transformer(
                 hidden_states=latents,
@@ -854,7 +956,7 @@ def run_wan_pipeline(
                 control_hidden_states=control_hidden_states,
                 return_dict=False,
             )[0]
-        latents = noise_scheduler.step(model_pred, t, latents)
+        latents = noise_scheduler.step(model_pred, timestep, latents)
         del model_pred, timestep_tensor
 
     del control_hidden_states
@@ -901,13 +1003,21 @@ def spatial_tiled_process(
         int((width + tile_overlap * (tile_num - 1)) / tile_num) // base * base,
     )
     tile_stride = (tile_size[0] - tile_overlap, tile_size[1] - tile_overlap)
+    latent_frames = (cond_frames.shape[2] - 1) // vae_scale_factor_temporal + 1
+    latent_tile_height = tile_size[0] // vae_scale_factor_spatial
+    latent_tile_width = tile_size[1] // vae_scale_factor_spatial
+    latent_stride_height = tile_stride[0] // vae_scale_factor_spatial
+    latent_stride_width = tile_stride[1] // vae_scale_factor_spatial
 
     cols = []
-    for i in range(tile_num):
+    noise_rows = []
+    for row_index in range(tile_num):
         rows = []
-        for j in range(tile_num):
-            h_start = min(i * tile_stride[0], height - tile_size[0])
-            w_start = min(j * tile_stride[1], width - tile_size[1])
+        current_noise_row = []
+        left_noise = None
+        for column_index in range(tile_num):
+            h_start = min(row_index * tile_stride[0], height - tile_size[0])
+            w_start = min(column_index * tile_stride[1], width - tile_size[1])
 
             cond_tile = cond_frames[
                 :,
@@ -923,6 +1033,28 @@ def spatial_tiled_process(
                 h_start : h_start + tile_size[0],
                 w_start : w_start + tile_size[1],
             ]
+            initial_latents = torch.randn(
+                1,
+                transformer.config.in_channels,
+                latent_frames,
+                latent_tile_height,
+                latent_tile_width,
+                device=DEVICE,
+                dtype=DTYPE,
+            )
+            if row_index > 0:
+                initial_latents[
+                    :, :, :, : latent_tile_height - latent_stride_height
+                ] = noise_rows[row_index - 1][column_index].to(DEVICE)
+            if left_noise is not None:
+                initial_latents[
+                    :, :, :, :, : latent_tile_width - latent_stride_width
+                ] = left_noise.to(DEVICE)
+
+            right_noise = (
+                initial_latents[:, :, :, :, latent_stride_width:].cpu().clone()
+            )
+            bottom_noise = initial_latents[:, :, :, latent_stride_height:].cpu().clone()
 
             tile_latent = run_wan_pipeline(
                 cond_tile,
@@ -936,11 +1068,15 @@ def spatial_tiled_process(
                 vae_scale_factor_temporal,
                 transformer_patch_size,
                 vae_cpu_offload,
+                initial_latents,
             )
             rows.append(tile_latent)
-            del cond_tile, mask_tile
+            current_noise_row.append(bottom_noise)
+            left_noise = right_noise
+            del cond_tile, mask_tile, initial_latents, right_noise, bottom_noise
             cleanup_cuda()
         cols.append(rows)
+        noise_rows.append(current_noise_row)
 
     latent_stride = (
         tile_stride[0] // vae_scale_factor_spatial,
@@ -952,24 +1088,26 @@ def spatial_tiled_process(
     )
 
     results_cols = []
-    for i, rows in enumerate(cols):
+    for row_index, rows in enumerate(cols):
         results_rows = []
-        for j, tile in enumerate(rows):
-            if i > 0:
-                tile = blend_v(cols[i - 1][j], tile, latent_overlap[0])
-            if j > 0:
-                tile = blend_h(rows[j - 1], tile, latent_overlap[1])
+        for column_index, tile in enumerate(rows):
+            if row_index > 0:
+                tile = blend_v(
+                    cols[row_index - 1][column_index], tile, latent_overlap[0]
+                )
+            if column_index > 0:
+                tile = blend_h(rows[column_index - 1], tile, latent_overlap[1])
             results_rows.append(tile)
         results_cols.append(results_rows)
 
     pixels = []
-    for i, rows in enumerate(results_cols):
-        for j, tile in enumerate(rows):
-            if i < len(results_cols) - 1:
+    for row_index, rows in enumerate(results_cols):
+        for column_index, tile in enumerate(rows):
+            if row_index < len(results_cols) - 1:
                 tile = tile[:, :, :, : latent_stride[0], :]
-            if j < len(rows) - 1:
+            if column_index < len(rows) - 1:
                 tile = tile[:, :, :, :, : latent_stride[1]]
-            rows[j] = tile
+            rows[column_index] = tile
         pixels.append(torch.cat(rows, dim=4))
 
     return torch.cat(pixels, dim=3)
@@ -993,28 +1131,54 @@ def resize_video_tensor(video_tensor, height, width, mode="bilinear"):
     ).permute(0, 2, 1, 3, 4)
 
 
-def load_video_chunk(video_reader, start_frame, end_frame, inpaint_scale, base):
-    frame_indices = list(range(start_frame, end_frame))
+def load_video_chunk(
+    video_reader,
+    source_video_reader,
+    start_frame,
+    end_frame,
+    max_frame_index,
+    inpaint_scale,
+    base,
+):
+    frame_indices = [
+        min(frame_index, max_frame_index)
+        for frame_index in range(start_frame, end_frame)
+    ]
     frames = video_reader.get_batch(frame_indices)
     frames = (
         torch.from_numpy(frames.asnumpy()).permute(3, 0, 1, 2).unsqueeze(0).float()
         / 255.0
     )
 
-    height, width = frames.shape[3] // 2, frames.shape[4] // 2
-    frames_left = frames[:, :, :, :height, :width].clone()
-    all_masks = frames[:, :, :, height:, :width].clone()
-    all_frames = frames[:, :, :, height:, width:].clone()
+    height, width = frames.shape[3], frames.shape[4] // 2
+    all_masks = frames[:, :, :, :, :width].clone()
+    all_frames = frames[:, :, :, :, width:].clone()
     del frames
+
+    source_frames = source_video_reader.get_batch(frame_indices)
+    frames_left = (
+        torch.from_numpy(source_frames.asnumpy())
+        .permute(3, 0, 1, 2)
+        .unsqueeze(0)
+        .float()
+        / 255.0
+    )
 
     if inpaint_scale != 1.0:
         scaled_height = max(base, int(height * inpaint_scale) // base * base)
         scaled_width = max(base, int(width * inpaint_scale) // base * base)
-        frames_left = resize_video_tensor(frames_left, scaled_height, scaled_width)
         all_masks = resize_video_tensor(
             all_masks, scaled_height, scaled_width, mode="nearest"
         )
         all_frames = resize_video_tensor(all_frames, scaled_height, scaled_width)
+
+    if frames_left.shape[3:] != all_frames.shape[3:]:
+        frames_left = resize_video_tensor(
+            frames_left,
+            all_frames.shape[3],
+            all_frames.shape[4],
+            mode="bicubic",
+        )
 
     all_frames = all_frames * (1.0 - all_masks) + 0.5 * all_masks
 
@@ -1049,32 +1213,11 @@ def pad_video_chunk(all_frames, all_masks, pad_h, pad_w):
     return all_frames, all_masks
 
 
-def extract_video_context(video_chunks, start_frame, end_frame):
-    context_chunks = []
-    chunk_start = 0
-    for video_chunk in video_chunks:
-        chunk_end = chunk_start + video_chunk.shape[2]
-        overlap_start = max(start_frame, chunk_start)
-        overlap_end = min(end_frame, chunk_end)
-        if overlap_start < overlap_end:
-            context_chunks.append(
-                video_chunk[
-                    :, :, overlap_start - chunk_start : overlap_end - chunk_start
-                ]
-            )
-        chunk_start = chunk_end
-
-    if not context_chunks:
-        return None
-
-    return torch.cat(context_chunks, dim=2)
-
-
 def get_inpainting_output_paths(
     input_video_path, output_path, output_video_path=None, anaglyph_video_path=None
 ):
-    video_name = (
-        input_video_path.split("/")[-1].replace(".mp4", "").replace("_1_splatting", "")
+    video_name = os.path.splitext(os.path.basename(input_video_path))[0].replace(
+        "_1_splatting", ""
     )
     if output_video_path is None:
         output_video_path = os.path.join(output_path, f"{video_name}_2_sbs.mp4")

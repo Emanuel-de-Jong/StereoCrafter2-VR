@@ -47,7 +47,6 @@ def infer_depth(
     max_res: int = 1024,
     process_length: int = -1,
     target_fps: int = -1,
-    #
     save_folder: str = "./demo_output",
     window_size: int = 110,
     overlap: int = 25,
@@ -60,7 +59,6 @@ def infer_depth(
 
     frames, target_fps = read_video_frames(video, process_length, target_fps, max_res)
 
-    # inference the depth map using the DepthCrafter pipeline
     with torch.inference_mode():
         res = pipe(
             frames,
@@ -73,13 +71,9 @@ def infer_depth(
             overlap=overlap,
             track_time=track_time,
         ).frames[0]
-    # convert the three-channel output to a single channel depth map
     res = res.sum(-1) / res.shape[-1]
-    # normalize the depth map to [0, 1] across the whole video
     res = (res - res.min()) / (res.max() - res.min())
-    # visualize the depth map and save the results
     vis = vis_sequence_depth(res)
-    # save the depth map and visualization with the target FPS
     save_path = os.path.join(save_folder, os.path.splitext(os.path.basename(video))[0])
     print(f"==> saving results to {save_path}")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -89,45 +83,21 @@ def infer_depth(
     save_video(vis, save_path + "_vis.mp4", fps=target_fps)
     save_video(frames, save_path + "_input.mp4", fps=target_fps)
 
-    # clear the cache for the next video
     gc.collect()
     torch.cuda.empty_cache()
 
     return [
         save_path + "_input.mp4",
         save_path + "_vis.mp4",
-        # save_path + "_depth.mp4",
     ]
 
 
 def construct_demo():
     with gr.Blocks(analytics_enabled=False) as depthcrafter_iface:
-        gr.Markdown(
-            """
-            <div align='center'> <h1> DepthCrafter: Generating Consistent Long Depth Sequences for Open-world Videos </span> </h1> \
-                        <h2 style='font-weight: 450; font-size: 1rem; margin: 0rem'>\
-                        <a href='https://wbhu.github.io'>Wenbo Hu</a>, \
-                        <a href='https://scholar.google.com/citations?user=qgdesEcAAAAJ&hl=en'>Xiangjun Gao</a>, \
-                        <a href='https://xiaoyu258.github.io/'>Xiaoyu Li</a>, \
-                        <a href='https://scholar.google.com/citations?user=tZ3dS3MAAAAJ&hl=en'>Sijie Zhao</a>, \
-                        <a href='https://vinthony.github.io/academic'> Xiaodong Cun</a>, \
-                        <a href='https://yzhang2016.github.io'>Yong Zhang</a>, \
-                        <a href='https://home.cse.ust.hk/~quan'>Long Quan</a>, \
-                        <a href='https://scholar.google.com/citations?user=4oXBp9UAAAAJ&hl=en'>Ying Shan</a>\
-                    </h2> \
-                    <a style='font-size:18px;color: #000000'>If you find DepthCrafter useful, please help ⭐ the </a>\
-                    <a style='font-size:18px;color: #FF5DB0' href='https://github.com/Tencent/DepthCrafter'>[Github Repo]</a>\
-                    <a style='font-size:18px;color: #000000'>, which is important to Open-Source projects. Thanks!</a>\
-                        <a style='font-size:18px;color: #000000' href='https://arxiv.org/abs/2409.02095'> [ArXiv] </a>\
-                        <a style='font-size:18px;color: #000000' href='https://depthcrafter.github.io/'> [Project Page] </a> </div>
-            """
-        )
-
         with gr.Row(equal_height=True):
             with gr.Column(scale=1):
                 input_video = gr.Video(label="Input Video")
 
-            # with gr.Tab(label="Output"):
             with gr.Column(scale=2):
                 with gr.Row(equal_height=True):
                     output_video_1 = gr.Video(
@@ -204,18 +174,6 @@ def construct_demo():
             fn=infer_depth,
             cache_examples="lazy",
         )
-        gr.Markdown(
-            """
-            <span style='font-size:18px;color: #E7CCCC'>Note: 
-            For time quota consideration, we set the default parameters to be more efficient here,
-            with a trade-off of shorter video length and slightly lower quality.
-            You may adjust the parameters according to our 
-            <a style='font-size:18px;color: #FF5DB0' href='https://github.com/Tencent/DepthCrafter'>[Github Repo]</a>
-             for better results if you have enough time quota.
-            </span>
-            """
-        )
-
         generate_btn.click(
             fn=infer_depth,
             inputs=[
@@ -235,5 +193,4 @@ def construct_demo():
 if __name__ == "__main__":
     demo = construct_demo()
     demo.queue()
-    # demo.launch(server_name="0.0.0.0", server_port=12345, debug=True, share=False)
     demo.launch(share=True)

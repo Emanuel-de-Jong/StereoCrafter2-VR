@@ -1,9 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
 
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# # Data loading based on https://github.com/NVIDIA/flownet2-pytorch
 
 
 import os
@@ -15,14 +10,11 @@ import csv
 import imageio
 
 
-# Check for endianness, based on Daniel Scharstein's optical flow code.
-# Using little-endian architecture, these two should be equal.
 TAG_FLOAT = 202021.25
 TAG_CHAR = "PIEH"
 
 
 def depth_read(filename):
-    """Read depth data from file, return as numpy array."""
     f = open(filename, "rb")
     check = np.fromfile(f, dtype=np.float32, count=1)[0]
     assert (

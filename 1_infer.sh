@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 CONVERT_START_SECONDS=$(date +%s)
 INPUT_VIDEO_PATH="${1:-./in/vid.mp4}"
 FILENAME=$(basename "$INPUT_VIDEO_PATH")
@@ -26,32 +28,21 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--target_fps 30 \
 	--max_disp 20 \
 	--max_res 1024 \
-	--num_denoising_steps 6 \
+	--num_denoising_steps 5 \
 	--window_size 56 \
 	--overlap 16 \
-	--decode_chunk_size 8 \
-	--cpu_offload model \
-	--depth_blur 0 \
-	--convergence 0.5 \
-	--convergence_mode manual
+	--decode_chunk_size 8
 
 printf "\n\n=== STEP 2: STEREO INPAINTING ===\n"
 python -u s1_pipeline/s2_inpainting.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_1_splatting.mkv" \
 	--source_video_path "$INPUT_VIDEO_PATH" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_2_sbs.mkv" \
-	--anaglyph_video_path "$OUTPUT_DIR/${BASENAME}_2_anaglyph.mp4" \
-	--output_path "$OUTPUT_DIR" \
 	--pre_trained_path ./weights/Wan2.1-VACE-14B-diffusers \
 	--transformer_path ./weights/StereoCrafter2-FP8 \
-	--tile_num 2 \
 	--frames_chunk 25 \
-	--frames_overlap 6 \
-	--transformer_dtype fp8 \
-	--transformer_cpu_offload none \
-	--vae_cpu_offload manual \
-	--inpaint_scale 1.0 \
-	--inference_steps 7
+	--frames_overlap 4 \
+	--inference_steps 5
 
 printf "\n\n=== STEP 3: INTERPOLATION ===\n"
 python -u s1_pipeline/s3_interpolation.py \
@@ -70,7 +61,6 @@ python -u s1_pipeline/s5_greenscreen.py \
 	--input_video_path "$OUTPUT_DIR/${BASENAME}_4_upscale.mp4" \
 	--output_video_path "$OUTPUT_DIR/${BASENAME}_5_result.mp4" \
 	--depth_npz_path "$OUTPUT_DIR/${BASENAME}_1_splatting.npz" \
-	--source_fps 30 \
 	--enabled True
 
 CONVERT_END_SECONDS=$(date +%s)

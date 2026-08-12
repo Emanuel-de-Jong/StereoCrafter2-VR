@@ -12,7 +12,7 @@ for video in "$INPUT_DIR"/*.{mp4,mov,avi,mkv,webm}; do
 
 	filename="$(basename "$video")"
 	basename="${filename%.*}"
-	result="$OUTPUT_DIR/${basename}_6_result.mp4"
+	result="$OUTPUT_DIR/${basename}_5_result.mp4"
 
 	if [ -e "$result" ]; then
 		continue

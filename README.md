@@ -49,23 +49,15 @@ pip install -r requirements.txt
 
 ## Dependencies
 
-#### 1. Install customized 'Forward-Warp' package for forward splatting
+#### 1. Install 'Forward-Warp' for forward splatting
 
 ```bash
 cd ./dependencies/Forward-Warp
-# Manually copy the content of Forward-Warp-Overwrites into Forward-Warp
 chmod a+x install.sh
 CC=gcc-12 CXX=g++-12 ./install.sh
 ```
 
-#### 2. Apply DepthCrafter changes
-
-```bash
-cd ./dependencies/
-# Manually copy the content of DepthCrafter-Overwrites into DepthCrafter
-```
-
-#### 3. Download Video2X
+#### 2. Download Video2X
 
 1. Download this [AppImage](https://github.com/k4yt3x/video2x/releases/download/6.4.0/Video2X-x86_64.AppImage).
 2. Put it in `dependencies/` in a new folder `Video2X/`.
@@ -112,14 +104,6 @@ mkdir Wan2.1-VACE-14B-diffusers
 mkdir StereoCrafter2-FP8
 # Download the files config.json and diffusion_pytorch_model_fp8.pt from https://huggingface.co/enoky/StereoCrafter2-FP8
 # Put them in the folder
-```
-
-#### 5. Download the [iw3 SOD model](https://github.com/enoky/StereoCrafter/blob/main/dependency/iw3_sod_v1_20260122.pth).
-
-```bash
-mkdir StereoCrafter-GUI-Suite
-# Download https://github.com/enoky/StereoCrafter/blob/main/dependency/iw3_sod_v1_20260122.pth
-# Put it in the folder
 ```
 
 ## 🔄 Inference

@@ -1,3 +1,6 @@
+> [!WARNING]
+> Unless you need the upscaling and greenscreening, just use [nunif iw3](https://github.com/nagadomi/nunif/blob/dev/iw3/README.md). It's SO much easier, faster and more battle tested.
+
 <div align="center">
 <h2>StereoCrafter: Diffusion-based Generation of Long and High-fidelity Stereoscopic 3D from Monocular Videos</h2>
 

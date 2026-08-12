@@ -24,14 +24,14 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--pre_trained_path ./weights/stable-video-diffusion-img2vid-xt-1-1 \
 	--unet_path ./weights/DepthCrafter \
 	--target_fps 30 \
-	--max_disp 26 \
+	--max_disp 20 \
 	--max_res 896 \
 	--num_denoising_steps 6 \
 	--window_size 56 \
 	--overlap 16 \
 	--decode_chunk_size 8 \
 	--cpu_offload model \
-	--depth_blur 2 \
+	--depth_blur 0 \
 	--convergence 0.5 \
 	--convergence_mode manual
 

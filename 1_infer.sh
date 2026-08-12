@@ -25,7 +25,7 @@ python -u s1_pipeline/s1_depth_splatting.py \
 	--unet_path ./weights/DepthCrafter \
 	--target_fps 30 \
 	--max_disp 20 \
-	--max_res 896 \
+	--max_res 1024 \
 	--num_denoising_steps 6 \
 	--window_size 56 \
 	--overlap 16 \

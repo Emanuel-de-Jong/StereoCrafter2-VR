@@ -35,7 +35,7 @@ def main(
     output_video_path: str = str(g.OUTPUTS_DIR / "vid_1_splatting.mkv"),
     unet_path: str = str(g.DEPTHCRAFTER_WEIGHTS_PATH),
     pre_trained_path: str = str(g.SVD_WEIGHTS_PATH),
-    max_disp: float = 26,
+    max_disp: float = 20,
     max_disp_reference_width: int = 1920,
     process_length: int = -1,
     batch_size: int = 10,
@@ -44,7 +44,7 @@ def main(
     guidance_scale: float = 1.2,
     window_size: int = 56,
     overlap: int = 16,
-    max_res: int = 896,
+    max_res: int = 1024,
     dataset: str = "open",
     target_fps: int = 30,
     seed: int = 42,
@@ -58,7 +58,7 @@ def main(
     mask_mode: str = "raw",
     depth_edge_threshold: float = 0.03,
     depth_dilation: int = 0,
-    depth_blur: int = 2,
+    depth_blur: int = 0,
     convergence: float = 0.5,
     convergence_mode: str = "manual",
     convergence_model_path: str = str(g.CONVERGENCE_WEIGHTS_PATH),
@@ -557,8 +557,11 @@ def DepthSplatting(
         left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
         disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
 
-        disp_map = (disp_map - convergence) * 2.0
-        disp_map = disp_map * effective_max_disp
+        # disp_map = (disp_map - convergence) * 2.0
+        # disp_map = disp_map * effective_max_disp
+
+        disp_map = disp_map * 2.0 - 1.0
+        disp_map = disp_map * max_disp
 
         with torch.no_grad():
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
